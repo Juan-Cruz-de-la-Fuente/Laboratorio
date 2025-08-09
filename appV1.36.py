@@ -11,6 +11,9 @@ from datetime import datetime
 import base64
 from scipy.spatial import Delaunay
 from typing import Dict
+import os
+import zipfile
+import random
 
 # Configuración de la página
 st.set_page_config(
@@ -19,6 +22,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+plt.rcParams['figure.dpi'] = 200       # resolución en pantalla
+plt.rcParams['savefig.dpi'] = 300      # resolución al exportar
+plt.rcParams['figure.figsize'] = (12, 8)  # tamaño por defecto
 
 # CSS personalizado para estilo moderno con nuevo color
 st.markdown("""
@@ -166,6 +173,8 @@ if 'configuracion_3d' not in st.session_state:
     st.session_state.configuracion_3d = {}
 if 'sub_archivos_3d_generados' not in st.session_state:
     st.session_state.sub_archivos_3d_generados = {}
+if 'diferencias_guardadas' not in st.session_state:
+    st.session_state.diferencias_guardadas = {}
 
 def extraer_tiempo_y_coordenadas(nombre_archivo):
     """Extraer tiempo y coordenadas X, Y del nombre del archivo"""
@@ -248,11 +257,12 @@ def procesar_promedios(archivo_csv, orden="asc"):
 
 def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archivo_fuente):
     """
-    MODIFICADO: Se asegura de que el 'archivo_fuente' sea consistente y añade 'master_file'.
+    Crea sub-archivos usando el nombre original del CSV como identificador único
+    para evitar colisiones cuando varios CSV tienen nombres 'normalizados' iguales.
     """
     sub_archivos = {}
-    # Este es el nombre base que queremos usar para todo el grupo.
     nombre_base = extraer_nombre_base_archivo(nombre_archivo_fuente)
+    nombre_original = os.path.splitext(os.path.basename(nombre_archivo_fuente))[0]  # sin extensión
 
     for x_valor in sorted(df_resultado["X_coord"].dropna().unique()):
         df_x = df_resultado[df_resultado["X_coord"] == x_valor]
@@ -260,16 +270,16 @@ def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archi
         for tiempo in sorted(df_x["Tiempo (s)"].dropna().unique()):
             df_xt = df_x[df_x["Tiempo (s)"] == tiempo]
 
-            # La clave única para cada sub-archivo.
-            clave_sub_archivo = f"{nombre_base}_X{x_valor}_T{tiempo}s"
-            
+            # Usar el nombre original en la clave para que no colisione con otros CSV
+            clave_sub_archivo = f"{nombre_original}_X{x_valor}_T{tiempo}s"
+
             sub_archivos[clave_sub_archivo] = {
-                # CORRECCIÓN: Usamos siempre 'nombre_base', que es consistente.
-                'archivo_fuente': nombre_base,
+                'archivo_fuente': nombre_base,          # nombre legible/normalizado
+                'archivo_origen': nombre_original,     # IDENTIFICADOR ÚNICO (nombre del archivo subido)
                 'tiempo': tiempo,
                 'x_traverser': x_valor,
                 'datos': df_xt,
-                'nombre_archivo': f"{nombre_base}_X{x_valor}_T{tiempo}s.csv",
+                'nombre_archivo': f"{nombre_original}_X{x_valor}_T{tiempo}s.csv",
                 'num_posiciones_y': len(df_xt['Y_coord'].unique()) if 'Y_coord' in df_xt.columns else 1
             }
 
@@ -390,6 +400,11 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
             title_font=dict(color='black'),
             tickfont=dict(color='black')
         )
+    )
+    fig.update_layout(
+    width=1600,  # más ancho
+    height=900,  # más alto
+    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
     )
     
     return fig
@@ -549,6 +564,11 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
             height=800,
             margin=dict(r=20, b=10, l=10, t=50)
         )
+        fig.update_layout(
+    width=1600,  # más ancho
+    height=900,  # más alto
+    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
+    )
 
         return fig
 
@@ -645,6 +665,12 @@ def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
         ),
         font=dict(color="black")
     )
+    fig.update_layout(
+    width=1600,  # más ancho
+    height=900,  # más alto
+    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
+    )
+
     return fig
     
 def crear_grafico_diferencia_areas(sub_archivo_a, sub_archivo_b, configuracion):
@@ -734,21 +760,21 @@ def crear_grafico_diferencia_areas(sub_archivo_a, sub_archivo_b, configuracion):
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family="Arial", size=12),
-        title_font=dict(size=16, color="#08596C"),
+        title_font=dict(size=16, color="#FFFFFF"),
         xaxis=dict(
             showgrid=True,
-            gridcolor="#e5e7eb",
+            gridcolor="#000005",
             zeroline=True,
-            zerolinecolor='black',
+            zerolinecolor='white',
             zerolinewidth=2,
             scaleanchor="y",      # AGREGADO: Configuración solicitada
             scaleratio=4          # AGREGADO: Configuración solicitada
         ),
         yaxis=dict(
             showgrid=True,
-            gridcolor="#e5e7eb",
+            gridcolor="#080000",
             zeroline=True,
-            zerolinecolor='black',
+            zerolinecolor='white',
             zerolinewidth=2
         ),
         legend=dict(
@@ -760,7 +786,15 @@ def crear_grafico_diferencia_areas(sub_archivo_a, sub_archivo_b, configuracion):
             font=dict(size=12, color='black')  # AGREGAR COLOR NEGRO
         )
     )
-    
+    fig.update_layout(
+    plot_bgcolor='rgba(0,0,0,0)',   # Fondo transparente
+    paper_bgcolor='rgba(0,0,0,0)',  # Fondo transparente
+    font=dict(color='white'),       # Texto en blanco
+    xaxis_title="Presión Total [Pa]",
+    yaxis_title="Altura Z [mm]",
+    height=900,
+    width=1600
+    )
     return fig, area_diferencia
 
 def mostrar_configuracion_sensores(section_key):
@@ -895,7 +929,11 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
             ),
             margin=dict(l=0, r=0, b=0, t=40)
         )
-        
+        fig.update_layout(
+    width=1600,  # más ancho
+    height=900,  # más alto
+    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
+    )   
         return fig
 
     except Exception as e:
@@ -934,18 +972,18 @@ def mostrar_resumen_archivos_tabla(sub_archivos_por_fuente):
     
     for archivo_fuente, tiempos_dict in sub_archivos_por_fuente.items():
         for tiempo, sub_archivos_tiempo in tiempos_dict.items():
-            clave, sub_archivo = sub_archivos_tiempo[0]
-            
-            datos_tabla.append({
-                'Archivo_Fuente': archivo_fuente,
-                'Tiempo_s': f"T{tiempo}s", 
-                'Registros': len(sub_archivo['datos']),
-                'Nombre_Archivo': sub_archivo['nombre_archivo'],
-                'Clave': clave
-            })
+            for clave, sub_archivo in sub_archivos_tiempo:
+                datos_tabla.append({
+                    'Archivo_Fuente': archivo_fuente,
+                    'Tiempo_s': f"T{tiempo}s", 
+                    'Posición_X': sub_archivo['x_traverser'],
+                    'Registros': len(sub_archivo['datos']),
+                    'Nombre_Archivo': sub_archivo['nombre_archivo'],
+                    'Clave': clave
+                })
     
     # Crear DataFrame y mostrar como tabla
-    df_resumen = pd.DataFrame(datos_tabla)
+    df_resumen = pd.DataFrame(datos_tabla).sort_values(['Archivo_Fuente', 'Posición_X', 'Tiempo_s'])
     
     # NUEVO: Mostrar tabla con separadores correctos para CSV
     st.dataframe(
@@ -983,6 +1021,9 @@ def mostrar_resumen_archivos_tabla(sub_archivos_por_fuente):
 with st.sidebar:
     st.markdown("### 🧭 Navegación")
     
+    # --- CÓDIGO CORREGIDO ---
+    # Estos botones ahora solo cambian de sección, sin borrar nada.
+    
     if st.button("🏠 Inicio", use_container_width=True):
         st.session_state.seccion_actual = 'inicio'
         st.rerun()
@@ -990,14 +1031,18 @@ with st.sidebar:
     if st.button("📊 BETZ 2D", use_container_width=True):
         st.session_state.seccion_actual = 'betz_2d'
         st.rerun()
-    
+
     if st.button("🌪️ BETZ 3D", use_container_width=True):
         st.session_state.seccion_actual = 'betz_3d'
+        st.rerun()
+
+    if st.button("🖥️ Visualización de Resultados", use_container_width=True):
+        st.session_state.seccion_actual = 'visualizacion'
         st.rerun()
     
     st.divider()
     
-    # Información del proyecto
+    # El resto del código de la sidebar no necesita cambios
     st.markdown("### ℹ️ Información")
     st.markdown(f"**Fecha:** {datetime.now().strftime('%d/%m/%Y')}")
     st.markdown(f"**Hora:** {datetime.now().strftime('%H:%M:%S')}")
@@ -1008,9 +1053,9 @@ with st.sidebar:
     if st.session_state.sub_archivos_generados:
         st.markdown(f"**Sub-archivos 2D:** {len(st.session_state.sub_archivos_generados)}")
     
-    if st.session_state.sub_archivos_3d:
-        st.markdown(f"**Sub-archivos 3D:** {len(st.session_state.sub_archivos_3d)}")
-
+    # Corregido para usar la clave correcta de las diferencias guardadas
+    if st.session_state.get('diferencias_guardadas'):
+        st.markdown(f"**Diferencias guardadas:** {len(st.session_state.diferencias_guardadas)}")
 # Contenido principal según la sección
 if st.session_state.seccion_actual == 'inicio':
     # Página de inicio
@@ -1037,9 +1082,10 @@ if st.session_state.seccion_actual == 'inicio':
             <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
                 Análisis bidimensional de perfiles de presión.<br><br>
                 • Procesamiento automático de archivos CSV<br>
-                • Extracción de tiempo y coordenadas X,Y<br>
-                • Gráficos concatenados modo Betz<br>
-                • Configuración flexible de sensores
+                • Extracción de tiempo y coordenadas X-Y<br>
+                • Gráficos en la seccion X <br>
+                • Configuración flexible de sensores <br>
+                • Análisis de Diferencias de Áreas
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -1056,10 +1102,11 @@ if st.session_state.seccion_actual == 'inicio':
             </h3>
             <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
                 Análisis tridimensional completo de flujos.<br><br>
+                • Procesamiento automático de archivos CSV<br>
+                • Configuración flexible de sensores <br>
                 • Análisis de múltiples posiciones X, Y<br>
                 • Visualización 3D de campos de presión<br>
-                • Perfiles concatenados modo Betz 3D<br>
-                • Superficie interactiva de presiones
+                • Análisis de Diferencias de Superficies<br>
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -1069,35 +1116,42 @@ if st.session_state.seccion_actual == 'inicio':
             st.rerun()
 
 elif st.session_state.seccion_actual == 'betz_2d':
-    st.markdown("# 📊 BETZ 2D - Análisis Bidimensional")
-    st.markdown("Análisis de perfiles de presión concatenados con extracción automática de tiempo y coordenadas")
-    
+    if st.session_state.configuracion_inicial:
+        st.markdown("# 📊 BETZ 2D - Análisis Bidimensional")
+        st.markdown("Análisis de perfiles de presión concatenados con extracción automática de tiempo y coordenadas")
+
+    # --- Inicializar variables persistentes ---
+    if "datos_procesados_betz2d" not in st.session_state:
+        st.session_state.datos_procesados_betz2d = {}
+    if "sub_archivos_betz2d" not in st.session_state:
+        st.session_state.sub_archivos_betz2d = {}
+    if "uploaded_files_betz2d" not in st.session_state:
+        st.session_state.uploaded_files_betz2d = []
+
     # Paso 1: Configuración inicial
     st.markdown("## ⚙️ Paso 1: Configuración Inicial")
-    
+
     # Reorganizar: datos a la izquierda, imagen más pequeña a la derecha
     col_datos, col_imagen = st.columns([2, 1])
-    
+
     with col_datos:
         st.markdown("### 📍 Configuración de Sensores y Geometría")
-        
-        # Orden de sensores
+
         orden_sensores = st.selectbox(
             "Orden de lectura de sensores:",
             ["asc", "des"],
             format_func=lambda x: "Ascendente (sensor 1 más abajo al 12 más arriba)" if x == "asc" else "Descendente (sensor 12 más abajo y sensor 1 más arriba)",
             help="Define cómo se leen los datos de los sensores en relación a su posición física"
         )
-        
-        # Pregunta sobre el sensor de referencia
+
         st.info("🔍 **Pregunta:** ¿Qué sensor corresponde a la toma número 12 (la que se encuentra cerca del piso)?")
         sensor_referencia = st.selectbox(
             "Sensor de referencia (toma 12):",
             [f"Sensor {i}" for i in range(1, 13)],
-            index=11,  # Por defecto Sensor 12
+            index=11,
             help="Seleccione el sensor que corresponde a la toma física número 12"
         )
-        
+
         distancia_toma_12 = st.number_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
             value=-120.0,
@@ -1105,7 +1159,7 @@ elif st.session_state.seccion_actual == 'betz_2d':
             format="%.1f",
             help="Distancia en mm desde el punto de referencia del traverser"
         )
-        
+
         distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
             value=10.91,
@@ -1113,8 +1167,7 @@ elif st.session_state.seccion_actual == 'betz_2d':
             format="%.2f",
             help="Distancia física entre tomas consecutivas según el plano técnico"
         )
-        
-        # Guardar configuración
+
         if st.button("💾 Guardar Configuración", type="primary"):
             st.session_state.configuracion_inicial = {
                 'orden': orden_sensores,
@@ -1124,144 +1177,215 @@ elif st.session_state.seccion_actual == 'betz_2d':
             }
             st.success("✅ Configuración guardada correctamente")
             st.rerun()
-    
+
     with col_imagen:
         st.markdown("### 📐 Diagrama de Referencia")
         st.markdown("""
         <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 2rem; text-align: center; color: #64748b;">
             <h4>📐 Diagrama de Referencia</h4>
-            <p>Aquí iría el diagrama técnico de sensores</p>
+            <img src="https://raw.githubusercontent.com/Juan-Cruz-de-la-Fuente/Laboratorio/main/Peine.jpg" 
+                alt="Diagrama técnico" 
+                style="max-width:100%; height:auto; border-radius: 8px;">
             <p><small>Subir imagen del plano técnico</small></p>
         </div>
         """, unsafe_allow_html=True)
-    
+
     # Paso 2: Carga de archivos
     if st.session_state.configuracion_inicial:
         st.markdown("## 📁 Paso 2: Carga de Archivos de Incertidumbre")
-        
         uploaded_files = st.file_uploader(
             "Seleccione uno o más archivos CSV de incertidumbre:",
             type=['csv'],
             accept_multiple_files=True,
-            help="Los archivos deben tener el formato estándar del laboratorio con tiempo y coordenadas en el nombre"
+            key="uploader_betz2d",
+            help="Los archivos deben tener el formato estándar del laboratorio..."
         )
-        
+
+        if uploaded_files:
+            st.session_state.uploaded_files_betz2d = uploaded_files
+        else:
+            uploaded_files = st.session_state.uploaded_files_betz2d
+
         if uploaded_files:
             st.success(f"✅ {len(uploaded_files)} archivo(s) cargado(s)")
-            
-            # Procesar archivos automáticamente con la configuración guardada
-            for archivo in uploaded_files:
-                if archivo.name not in st.session_state.datos_procesados:
-                    with st.spinner(f"Procesando {archivo.name}..."):
-                        # Usar la función exacta del código de referencia
-                        datos = procesar_promedios(archivo, st.session_state.configuracion_inicial['orden'])
-                        if datos is not None:
-                            st.session_state.datos_procesados[archivo.name] = datos
-                            sub_archivos = crear_archivos_individuales_por_tiempo_y_posicion(datos, archivo.name)
-                            st.session_state.sub_archivos_generados.update(sub_archivos)
-                            
-                            # --- NUEVO: guardar subarchivos ordenados ---
-                            nombre_base = extraer_nombre_base_archivo(archivo.name)
-                            
-                            datos_ordenados_nombre = datos.sort_values("Archivo")
-                            datos_ordenados_x = datos.sort_values("X_coord")
-                            datos_ordenados_tiempo = datos.sort_values("Tiempo (s)")
-                            
-                            # Guardar en buffer y permitir descarga (opcional: también podés guardarlos en el sistema si hacés .to_csv(ruta))
-                            for label, df_ordenado in {
-                                "ordenado_nombre": datos_ordenados_nombre,
-                                "ordenado_x": datos_ordenados_x,
-                                "ordenado_tiempo": datos_ordenados_tiempo
-                                }.items():
-                                    csv_bytes = df_ordenado.to_csv(sep=';', index=False, decimal=',').encode('utf-8-sig')
-                                    st.download_button(
-                                        label=f"📥 Descargar {nombre_base}_{label}.csv",
-                                        data=csv_bytes,
-                                        file_name=f"{nombre_base}_{label}.csv",
-                                        mime="text/csv"
-                                    )
 
-                            st.success(f"✅ {archivo.name} procesado. Se generaron {len(sub_archivos)} sub-archivos.")
-            
-            # Mostrar datos procesados
-            if st.session_state.datos_procesados:
-                st.markdown("## 📋 Datos Procesados")
-                
-                for nombre_archivo, datos in st.session_state.datos_procesados.items():
-                    with st.expander(f"Ver datos de {nombre_archivo}"):
-                        st.dataframe(datos, use_container_width=True)
-                        
-                        # Mostrar tiempos y coordenadas únicos encontrados
-                        tiempos_unicos = datos['Tiempo (s)'].dropna().unique()
-                        coordenadas_unicas = datos[['X_coord', 'Y_coord']].drop_duplicates()
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown(f"**Tiempos encontrados:** {sorted(tiempos_unicos)}")
-                        with col2:
-                            st.markdown("**Coordenadas encontradas:**")
-                            st.dataframe(coordenadas_unicas, use_container_width=True)
-    
-    # Paso 3: Mostrar sub-archivos generados
-    if st.session_state.sub_archivos_generados:
-        st.markdown("## 📂 Paso 3: Sub-archivos Generados por Archivo y Tiempo")
-        
-        # NUEVA ORGANIZACIÓN: Agrupar por archivo fuente primero, luego por tiempo
-        sub_archivos_por_fuente = {}
-        for clave, sub_archivo in st.session_state.sub_archivos_generados.items():
-            archivo_fuente = sub_archivo['archivo_fuente']
-            tiempo = sub_archivo['tiempo']
-            
-            if archivo_fuente not in sub_archivos_por_fuente:
-                sub_archivos_por_fuente[archivo_fuente] = {}
-            if tiempo not in sub_archivos_por_fuente[archivo_fuente]:
-                sub_archivos_por_fuente[archivo_fuente][tiempo] = []
-            
-            sub_archivos_por_fuente[archivo_fuente][tiempo].append((clave, sub_archivo))
-        
-        # MOSTRAR TABLA ORGANIZADA
-        mostrar_resumen_archivos_tabla(sub_archivos_por_fuente)
-        
-        # Mostrar sub-archivos agrupados por archivo fuente
-        for archivo_fuente, tiempos_dict in sub_archivos_por_fuente.items():
-            with st.expander(f"📁 {archivo_fuente} - {len(tiempos_dict)} tiempos"):
-                for tiempo, sub_archivos_tiempo in tiempos_dict.items():
-                    # Ahora solo hay UN sub-archivo por tiempo
-                    clave, sub_archivo = sub_archivos_tiempo[0]
-                    
-                    col1, col2, col3 = st.columns(3)
+        for archivo in uploaded_files:
+            if archivo.name not in st.session_state.datos_procesados_betz2d:
+                with st.spinner(f"Procesando {archivo.name}..."):
+                    datos = procesar_promedios(archivo, st.session_state.configuracion_inicial['orden'])
+                    if datos is not None:
+                        st.session_state.datos_procesados_betz2d[archivo.name] = datos
+                        st.session_state.datos_procesados[archivo.name] = datos
+                        sub_archivos = crear_archivos_individuales_por_tiempo_y_posicion(datos, archivo.name)
+
+                        if 'sub_archivos_generados' not in st.session_state:
+                            st.session_state.sub_archivos_generados = {}
+
+                        st.session_state.sub_archivos_generados.update(sub_archivos)
+
+                        nombre_base = extraer_nombre_base_archivo(archivo.name)
+                        datos_ordenados_nombre = datos.sort_values("Archivo")
+                        datos_ordenados_x = datos.sort_values("X_coord")
+                        datos_ordenados_tiempo = datos.sort_values("Tiempo (s)")
+
+                        for label, df_ordenado in {
+                            "ordenado_nombre": datos_ordenados_nombre,
+                            "ordenado_x": datos_ordenados_x,
+                            "ordenado_tiempo": datos_ordenados_tiempo
+                        }.items():
+                            csv_bytes = df_ordenado.to_csv(sep=';', index=False, decimal=',').encode('utf-8-sig')
+                            st.download_button(
+                                label=f"📥 Descargar {nombre_base}_{label}.csv",
+                                data=csv_bytes,
+                                file_name=f"{nombre_base}_{label}.csv",
+                                mime="text/csv"
+                            )
+
+                        st.success(f"✅ {archivo.name} procesado. Se generaron {len(sub_archivos)} sub-archivos.")
+
+
+        # Mostrar datos procesados
+        if st.session_state.datos_procesados:
+            st.markdown("## 📋 Datos Procesados")
+            for nombre_archivo, datos in st.session_state.datos_procesados.items():
+                with st.expander(f"Ver datos de {nombre_archivo}"):
+                    st.dataframe(datos, use_container_width=True)
+                    tiempos_unicos = datos['Tiempo (s)'].dropna().unique()
+                    coordenadas_unicas = datos[['X_coord', 'Y_coord']].drop_duplicates()
+                    col1, col2 = st.columns(2)
                     with col1:
-                        st.markdown(f"**⏱️ T{tiempo}s**")
+                        st.markdown(f"**Tiempos encontrados:** {sorted(tiempos_unicos)}")
                     with col2:
-                        st.markdown(f"Registros: {len(sub_archivo['datos'])}")
-                    with col3:
-                        # Botón para descargar sub-archivo
-                        csv_data = sub_archivo['datos'].to_csv(
-                            index=False, 
-                            sep=';',  # Punto y coma para Excel
-                            encoding='utf-8-sig',  # Encoding para Excel
-                            decimal=','  # Separador decimal
-                        )
-                        st.download_button(
-                            label="📥 Descargar CSV",
-                            data=csv_data,
-                            file_name=sub_archivo['nombre_archivo'],
-                            mime="text/csv",
-                            key=f"download_{clave}",
-                            use_container_width=True
-                        )
-                    st.markdown("---")
-        
+                        st.markdown("**Coordenadas encontradas:**")
+                        st.dataframe(coordenadas_unicas, use_container_width=True)
+
+
+        st.header("📂 Paso 3: Sub-archivos Generados por Archivo y Tiempo")
+
+        # --- 1) Recolectar todos los sub-archivos desde session_state ---
+        filas_resumen = []
+        for clave, sub in st.session_state.sub_archivos_generados.items():
+            archivo_origen = sub.get('archivo_origen', sub.get('archivo_fuente', 'SinOrigen'))
+            tiempo = sub.get('tiempo', 'SinTiempo')
+            x_trav = sub.get('x_traverser', None)
+            registros = len(sub.get('datos', pd.DataFrame()))
+            nombre_archivo = sub.get('nombre_archivo', f"{clave}.csv")
+            filas_resumen.append({
+                'Archivo_Fuente': archivo_origen,
+                'Tiempo_s': f"T{tiempo}s" if pd.notna(tiempo) else 'SinTiempo',
+                'Posicion_X': x_trav,
+                'Registros': registros,
+                'Nombre_Archivo': nombre_archivo,
+                'Clave': clave
+            })
+
+        # --- 2) DataFrame resumen y descarga ---
+        if filas_resumen:
+            df_resumen = pd.DataFrame(filas_resumen)
+            # ordenar para mejor lectura
+            df_resumen = df_resumen.sort_values(['Archivo_Fuente', 'Tiempo_s', 'Posicion_X'], na_position='last').reset_index(drop=True)
+
+            st.markdown("### 📊 Resumen de Sub-archivos Generados")
+            st.dataframe(df_resumen[['Archivo_Fuente', 'Tiempo_s', 'Posicion_X', 'Registros', 'Nombre_Archivo']], use_container_width=True)
+
+            csv_resumen = df_resumen[['Archivo_Fuente', 'Tiempo_s', 'Posicion_X', 'Registros', 'Nombre_Archivo']].to_csv(
+                index=False, sep=';', encoding='utf-8-sig', decimal=','
+            ).encode('utf-8-sig')
+
+            st.download_button(
+                label="📥 Descargar Tabla Resumen (CSV)",
+                data=csv_resumen,
+                file_name=f"resumen_subarchivos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key=f"desc_resumen_{datetime.now().timestamp()}"
+            )
+
+            # --- 3) Métricas (UNA sola vez) ---
+            total_sub_archivos = len(df_resumen)
+            total_archivos_fuente = df_resumen['Archivo_Fuente'].nunique()
+            total_registros = df_resumen['Registros'].sum()
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Sub-archivos", total_sub_archivos)
+            c2.metric("Archivos Fuente", total_archivos_fuente)
+            c3.metric("Total Registros", total_registros)
+
+            st.markdown("---")
+
+            # --- 4) Agrupar por archivo origen para mostrar expanders ---
+            grouped = {}
+            for _, row in df_resumen.iterrows():
+                archivo = row['Archivo_Fuente']
+                tiempo = row['Tiempo_s']
+                grouped.setdefault(archivo, {}).setdefault(tiempo, []).append(row.to_dict())
+
+            # Mostrar 1 expander por archivo origen
+            for archivo_origen, tiempos_dict in grouped.items():
+                num_tiempos = len(tiempos_dict)
+                with st.expander(f"📁 {archivo_origen} - {num_tiempos} tiempos", expanded=False):
+                    # Generar ZIP con todos los sub-archivos de este origen (para descargar de una)
+                    # Crearlo aquí en memoria y mostrar botón
+                    buffer = io.BytesIO()
+                    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for tiempo, items in tiempos_dict.items():
+                            for it in items:
+                                clave = it['Clave']
+                                df_sub = st.session_state.sub_archivos_generados[clave]['datos']
+                                csv_bytes = df_sub.to_csv(sep=';', index=False, decimal=',').encode('utf-8-sig')
+                                zf.writestr(it['Nombre_Archivo'], csv_bytes)
+                    zip_bytes = buffer.getvalue()
+                    st.download_button(
+                        label=f"📦 Descargar TODOS los sub-archivos ({archivo_origen}) .zip",
+                        data=zip_bytes,
+                        file_name=f"{archivo_origen}_subarchivos_{datetime.now().strftime('%Y%m%d')}.zip",
+                        mime="application/zip",
+                        key=f"zip_{archivo_origen}_{datetime.now().timestamp()}"
+                    )
+
+                    st.markdown("")
+
+                    # Para cada tiempo, listar sub-archivos (X) y dar botón CSV por cada uno
+                    for tiempo, items in sorted(tiempos_dict.items()):
+                        st.markdown(f"#### ⏱️ {tiempo}")
+                        for it in sorted(items, key=lambda r: (r['Posicion_X'] if pd.notna(r['Posicion_X']) else 1e9)):
+                            clave = it['Clave']
+                            nombre = it['Nombre_Archivo']
+                            registros = it['Registros']
+                            pos_x = it['Posicion_X']
+
+                            col_a, col_b, col_c = st.columns([4, 1, 2])
+                            col_a.markdown(f"**X{pos_x}** — `{nombre}`")
+                            col_b.markdown(f"Registros: {registros}")
+
+                            # generar bytes CSV para el botón
+                            df_sub = st.session_state.sub_archivos_generados[clave]['datos']
+                            csv_bytes = df_sub.to_csv(sep=';', index=False, decimal=',').encode('utf-8-sig')
+
+                            # key única por descarga (clave ya debería ser única)
+                            dl_key = f"dl_{clave}_{datetime.now().timestamp()}"
+                            col_c.download_button(
+                                label="📥 Descargar CSV",
+                                data=csv_bytes,
+                                file_name=nombre,
+                                mime="text/csv",
+                                key=dl_key,
+                                use_container_width=True
+                            )
+
+                        st.markdown("---")
+        else:
+            st.info("No hay sub-archivos generados aún. Subí y procesá archivos en Paso 2.")
+
         # Paso 4: Sección de Gráficos
         st.markdown("## 📈 Paso 4: Sección de Gráficos")
-        
+
         # Calcular posiciones de sensores
         posiciones_sensores = calcular_posiciones_sensores(
             st.session_state.configuracion_inicial['distancia_toma_12'],
             st.session_state.configuracion_inicial['distancia_entre_tomas'],
             st.session_state.configuracion_inicial['orden']
         )
-        
+
         # Mostrar tabla de posiciones calculadas
         with st.expander("Ver posiciones calculadas de sensores"):
             pos_df = pd.DataFrame([
@@ -1273,41 +1397,37 @@ elif st.session_state.seccion_actual == 'betz_2d':
                 for sensor, pos in posiciones_sensores.items()
             ])
             st.dataframe(pos_df, use_container_width=True)
+
         # Contenedor para los filtros de visualización
         with st.container(border=True):
             st.markdown("#### 🔍 Filtros de Visualización")
             
-            # Obtener opciones para los filtros a partir de los sub-archivos generados
             sub_archivos = st.session_state.sub_archivos_generados.values()
             archivos_opciones = sorted(list(set(sa['archivo_fuente'] for sa in sub_archivos)))
             x_opciones = sorted(list(set(sa['x_traverser'] for sa in sub_archivos)))
             tiempo_opciones = sorted(list(set(sa['tiempo'] for sa in sub_archivos)))
 
-            # Crear widgets de filtro en 3 columnas
             col1, col2, col3 = st.columns(3)
-            
-            # Filtro por Archivo Origen
             archivos_seleccionados = col1.multiselect(
                 "Filtrar por Archivo Origen:",
                 options=archivos_opciones,
-                default=archivos_opciones
+                default=archivos_opciones,
+                key="filtro_archivos_origen"
             )
-
-            # Filtro por Posición X (por defecto, selecciona TODAS las posiciones)
             x_seleccionados = col2.multiselect(
                 "Filtrar por Posición X:",
                 options=x_opciones,
-                default=x_opciones 
+                default=x_opciones,
+                key="filtro_posicion_x"
             )
-
-            # Filtro por Tiempo (por defecto, selecciona TODOS los tiempos)
             tiempos_seleccionados = col3.multiselect(
                 "Filtrar por Tiempo (s):",
                 options=tiempo_opciones,
-                default=tiempo_opciones
+                default=tiempo_opciones,
+                key="filtro_tiempo_s"
             )
 
-        # Filtrar los sub-archivos basados en la selección de los filtros
+        # Filtrar sub-archivos según filtros seleccionados
         sub_archivos_filtrados = {
             clave: sub_archivo for clave, sub_archivo in st.session_state.sub_archivos_generados.items()
             if sub_archivo['archivo_fuente'] in archivos_seleccionados
@@ -1315,92 +1435,76 @@ elif st.session_state.seccion_actual == 'betz_2d':
             and sub_archivo['tiempo'] in tiempos_seleccionados
         }
 
-        # Sección para seleccionar los archivos a graficar (ahora usa la lista filtrada)
-        st.markdown("### 🎯 Selección de Sub-archivos para Gráfico")
+        # Selección de sub-archivos para gráfico concatenado
+        st.markdown("### 🎯 Selección de Sub-archivos para Gráfico Concatenado")
+
         if not sub_archivos_filtrados:
             st.warning("No hay datos que coincidan con los filtros seleccionados.")
         else:
-            sub_archivos_seleccionados_para_grafico = {}
-            colores_por_tiempo = {10: '#08596C', 20: '#E74C3C', 30: '#F39C12', 40: '#27AE60', 50: '#8E44AD', 60: '#3498DB'}
-            
-            # Bucle único para mostrar todos los checkboxes en una sola lista
-            # Usamos sorted() para que la lista aparezca ordenada por su clave
+            sub_archivos_seleccionados = {}
+
+            # 🎨 Generar color único aleatorio para cada sub-archivo
+                # Inicializar colores persistentes en la sesión
+            if "colores_por_subarchivo" not in st.session_state:
+                st.session_state.colores_por_subarchivo = {}
+
+            # Asignar color solo a los sub-archivos que no tengan uno
+            for clave in sub_archivos_filtrados.keys():
+                if clave not in st.session_state.colores_por_subarchivo:
+                    st.session_state.colores_por_subarchivo[clave] = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+
+            colores_por_subarchivo = st.session_state.colores_por_subarchivo
+
+            # Mostrar lista de selección con colores
             for i, (clave, sub_archivo) in enumerate(sorted(sub_archivos_filtrados.items())):
                 col1, col2 = st.columns([3, 1])
-                # A la etiqueta le añadimos el nombre del archivo para saber de dónde viene
                 label = f"{sub_archivo['archivo_fuente']} - T{sub_archivo['tiempo']}s - X{sub_archivo['x_traverser']} - {len(sub_archivo['datos'])} registros"
                 
-                # La clave sigue siendo única gracias al enumerate
                 if col1.checkbox(label, key=f"incluir_{clave}_{i}"):
-                    sub_archivos_seleccionados_para_grafico[clave] = sub_archivo
+                    sub_archivos_seleccionados[clave] = sub_archivo
+                
                 with col2:
-                    color_tiempo = colores_por_tiempo.get(sub_archivo['tiempo'], '#333')
-                    st.markdown(f'<div style="background: {color_tiempo}; height: 20px; width: 60px; border-radius: 3px; margin-top: 8px;"></div>', unsafe_allow_html=True)
+                    color_sub = colores_por_subarchivo[clave]
+                    st.markdown(
+                        f'<div style="background: {color_sub}; height: 20px; width: 60px; border-radius: 3px; margin-top: 8px;"></div>',
+                        unsafe_allow_html=True
+                    )
 
-        if sub_archivos_seleccionados_para_grafico:
-            st.markdown("### 📊 Gráfico Concatenado Vertical Modo Betz")
-            
-            # Llama a la función para crear la figura del gráfico
-            fig = crear_grafico_betz_concatenado(
-                sub_archivos_seleccionados_para_grafico, 
-                posiciones_sensores, 
-                st.session_state.configuracion_inicial
-            )
-            
-            # Muestra el gráfico en pantalla si se generó correctamente
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-        # NUEVA SELECCIÓN ORGANIZADA POR ARCHIVO FUENTE
-        st.markdown("### 🎯 Selección de Sub-archivos para Gráfico Concatenado")
-        st.info("💡 **Nota:** Los gráficos se agruparán por tiempo. Todos los T10s tendrán el mismo color, todos los T20s otro color, etc.")
-        
-        sub_archivos_seleccionados = {}
-        
-        # Paleta de colores para mostrar en la selección
-        colores_por_tiempo = {
-            10: '#08596C',   # Teal
-            20: '#E74C3C',   # Rojo
-            30: '#F39C12',   # Naranja
-            40: '#27AE60',   # Verde
-            50: '#8E44AD',   # Púrpura
-            60: '#3498DB',   # Azul claro
-            70: '#E67E22',   # Naranja oscuro
-            80: '#2ECC71',   # Verde claro
-            90: '#9B59B6',   # Púrpura claro
-            100: '#1ABC9C',  # Turquesa
-            110: '#F1C40F',  # Amarillo
-            120: '#34495E'   # Gris azulado
-        }
-        # Generar gráfico concatenado si hay selecciones
-        if sub_archivos_seleccionados:
-            st.markdown("### 📊 Gráfico Concatenado Vertical Modo Betz")
-            
-            # Mostrar resumen de selección por tiempo
-            tiempos_seleccionados = {}
-            for clave, sub_archivo in sub_archivos_seleccionados.items():
-                tiempo = sub_archivo['tiempo']
-                if tiempo not in tiempos_seleccionados:
-                    tiempos_seleccionados[tiempo] = 0
-                tiempos_seleccionados[tiempo] += 1
-            
-            resumen_texto = ", ".join([f"T{t}s ({count} pos.)" for t, count in sorted(tiempos_seleccionados.items())])
-            st.info(f"📈 Graficando: {resumen_texto}")
-            
-            # Crear y mostrar el gráfico concatenado
-            fig = crear_grafico_betz_concatenado(
-                sub_archivos_seleccionados, 
-                posiciones_sensores, 
-                st.session_state.configuracion_inicial
-            )
-            
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Información adicional
-                total_puntos = len(sub_archivos_seleccionados) * 12  # 12 sensores por posición
+            # Generar gráfico concatenado si hay selecciones
+            if sub_archivos_seleccionados:
+                st.markdown("### 📊 Gráfico Concatenado Vertical Modo Betz")
+
+                fig = go.Figure()
+                for clave, sub_archivo in sub_archivos_seleccionados.items():
+                    color = colores_por_subarchivo[clave]
+                    z_datos, presion_datos = extraer_datos_para_grafico(sub_archivo, st.session_state.configuracion_inicial)
+                    if z_datos and presion_datos:
+                        fig.add_trace(go.Scatter(
+                            x=presion_datos,
+                            y=z_datos,
+                            mode='lines',
+                            name=clave,
+                            line=dict(color=color, width=2),
+                            fill='tozerox',
+                            opacity=0.7
+                        ))
+
+                fig.update_layout(
+                    title="Perfil de Presión Concatenado",
+                    xaxis_title="Presión Total [Pa]",
+                    yaxis_title="Altura Z [mm]",
+                    plot_bgcolor='rgba(0,0,0,0)',   # transparente en área del gráfico
+                    paper_bgcolor='rgba(0,0,0,0)',  # transparente en todo el lienzo
+                    font=dict(color='white'),       # texto en blanco para que se lea bien
+                    height=900,
+                    width=1600
+                )
+                st.plotly_chart(fig, use_container_width=False)
+
+                total_puntos = len(sub_archivos_seleccionados) * 12
                 st.success(f"✅ Gráfico vertical generado con {total_puntos} puntos de datos concatenados")
-                
-                # Opciones de exportación
+
+                # Exportaciones
                 st.markdown("### 📤 Exportación")
                 col1, col2, col3 = st.columns(3)
                 
@@ -1412,9 +1516,8 @@ elif st.session_state.seccion_actual == 'betz_2d':
                         file_name=f"grafico_betz_vertical_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
                         mime="text/html"
                     )
-                
+
                 with col2:
-                    # Crear CSV con datos concatenados
                     datos_exportar = []
                     for clave, sub_archivo in sub_archivos_seleccionados.items():
                         datos_sub = sub_archivo['datos'].copy()
@@ -1423,126 +1526,132 @@ elif st.session_state.seccion_actual == 'betz_2d':
                     
                     df_exportar = pd.concat(datos_exportar, ignore_index=True)
                     csv_data = df_exportar.to_csv(
-                        index=False, 
-                        sep=';',  # Punto y coma para Excel
-                        encoding='utf-8-sig',  # Encoding para Excel
-                        decimal=','  # Separador decimal
+                        index=False, sep=';', encoding='utf-8-sig', decimal=','
                     )
                     st.download_button(
                         label="📋 Descargar Datos (CSV)",
                         data=csv_data,
                         file_name=f"datos_betz_vertical_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
-                        )
-                
+                    )
+
                 with col3:
                     st.metric("Total de puntos", total_puntos)
             else:
                 st.error("❌ No se pudo generar el gráfico. Verifique los datos seleccionados.")
+
         
-        # NUEVA SECCIÓN: RESTA DE ÁREAS
-        if st.session_state.sub_archivos_generados:
-            st.markdown("---")
-            st.markdown("## ➖ Análisis de Diferencias de Áreas")
-            st.markdown("Selecciona dos sub-archivos para calcular la diferencia de áreas entre sus perfiles de presión")
-            
-            # Crear lista de opciones para los selectores
-            opciones_subarchivos = list(st.session_state.sub_archivos_generados.keys())
-            opciones_subarchivos.sort()  # Ordenar alfabéticamente
-            
-            col1, col2, col3 = st.columns([2, 1, 2])
-            
-            with col1:
-                archivo_a = st.selectbox(
-                    "📊 Archivo A (minuendo):",
-                    opciones_subarchivos,
-                    key="archivo_a_resta",
-                    help="Seleccione el primer sub-archivo (del cual se restará el segundo)"
-                )
-            
-            with col2:
-                st.markdown("### ➖")
-                st.markdown("<div style='text-align: center; font-size: 2rem; margin-top: 1rem;'>-</div>", unsafe_allow_html=True)
-            
-            with col3:
-                archivo_b = st.selectbox(
-                    "📊 Archivo B (sustraendo):",
-                    opciones_subarchivos,
-                    key="archivo_b_resta",
-                    help="Seleccione el segundo sub-archivo (que será restado del primero)"
-                )
-            
-            if st.button("🔄 Calcular Diferencia de Áreas", type="primary", use_container_width=True):
-                if archivo_a and archivo_b and archivo_a != archivo_b:
-                    with st.spinner("Calculando diferencia de áreas..."):
-                        # Crear gráfico de diferencia
-                        fig_diferencia, diferencia_area = crear_grafico_diferencia_areas(
-                            st.session_state.sub_archivos_generados[archivo_a],
-                            st.session_state.sub_archivos_generados[archivo_b],
-                            st.session_state.configuracion_inicial
-                        )
-                        
-                        if fig_diferencia:
-                            st.plotly_chart(fig_diferencia, use_container_width=True)
-                            
-                            # Mostrar resultados numéricos
-                            col1, col2, col3 = st.columns(3)
-                            
-                            # Calcular áreas individuales
-                            z_a, p_a = extraer_datos_para_grafico(
-                                st.session_state.sub_archivos_generados[archivo_a], 
+            # NUEVA SECCIÓN: RESTA DE ÁREAS
+            # NUEVA SECCIÓN: RESTA DE ÁREAS
+            if st.session_state.sub_archivos_generados:
+                st.markdown("---")
+                st.markdown("## ➖ Análisis de Diferencias de Áreas")
+                st.markdown("Selecciona dos sub-archivos para calcular la diferencia de áreas entre sus perfiles de presión")
+                
+                # Crear lista de opciones para los selectores
+                opciones_subarchivos = sorted(list(st.session_state.sub_archivos_generados.keys()))
+                
+                col1, col2, col3 = st.columns([2, 1, 2])
+                
+                with col1:
+                    archivo_a = st.selectbox(
+                        "📊 Archivo A (minuendo):",
+                        opciones_subarchivos,
+                        key="archivo_a_resta",
+                        help="Seleccione el primer sub-archivo (del cual se restará el segundo)"
+                    )
+                
+                with col2:
+                    st.markdown("<div style='text-align: center; font-size: 2rem; margin-top: 2rem;'>➖</div>", unsafe_allow_html=True)
+                
+                with col3:
+                    archivo_b = st.selectbox(
+                        "📊 Archivo B (sustraendo):",
+                        opciones_subarchivos,
+                        index=1 if len(opciones_subarchivos) > 1 else 0,
+                        key="archivo_b_resta",
+                        help="Seleccione el segundo sub-archivo (que será restado del primero)"
+                    )
+                
+                # --- INICIO DE LA ESTRUCTURA CORREGIDA ---
+
+                # PARTE 1: Botón para CALCULAR. Su única misión es generar el gráfico y ponerlo en una "bandeja" temporal.
+                if st.button("🔄 Calcular Diferencia de Áreas", type="primary", use_container_width=True):
+                    if archivo_a and archivo_b and archivo_a != archivo_b:
+                        with st.spinner("Calculando diferencia de áreas..."):
+                            fig_diferencia, diferencia_area = crear_grafico_diferencia_areas(
+                                st.session_state.sub_archivos_generados[archivo_a],
+                                st.session_state.sub_archivos_generados[archivo_b],
                                 st.session_state.configuracion_inicial
                             )
-                            z_b, p_b = extraer_datos_para_grafico(
-                                st.session_state.sub_archivos_generados[archivo_b], 
-                                st.session_state.configuracion_inicial
-                            )
-                            
-                            area_a = calcular_area_bajo_curva(z_a, p_a)
-                            area_b = calcular_area_bajo_curva(z_b, p_b)
-                            
-                            with col1:
-                                st.metric(
-                                    f"Área {st.session_state.sub_archivos_generados[archivo_a]['archivo_fuente']}", 
-                                    f"{area_a:.2f} Pa·mm"
-                                )
-                            
-                            with col2:
-                                st.metric(
-                                    f"Área {st.session_state.sub_archivos_generados[archivo_b]['archivo_fuente']}", 
-                                    f"{area_b:.2f} Pa·mm"
-                                )
-                            
-                            with col3:
-                                delta_color = "normal" if diferencia_area >= 0 else "inverse"
-                                st.metric(
-                                    "Diferencia de Áreas", 
-                                    f"{diferencia_area:.2f} Pa·mm",
-                                    delta=f"{diferencia_area:.2f}",
-                                    delta_color=delta_color
-                                )
-                            
-                            # Interpretación del resultado
-                            if diferencia_area > 0:
-                                st.success(f"✅ El área de **{st.session_state.sub_archivos_generados[archivo_a]['archivo_fuente']}** es **{diferencia_area:.2f} Pa·mm** mayor que la de **{st.session_state.sub_archivos_generados[archivo_b]['archivo_fuente']}**")
-                            elif diferencia_area < 0:
-                                st.info(f"ℹ️ El área de **{st.session_state.sub_archivos_generados[archivo_b]['archivo_fuente']}** es **{abs(diferencia_area):.2f} Pa·mm** mayor que la de **{st.session_state.sub_archivos_generados[archivo_a]['archivo_fuente']}**")
+                            if fig_diferencia:
+                                # Guardamos TODO lo necesario en la sesión para mostrarlo después del reinicio de la página.
+                                st.session_state.figura_diferencia_temporal = {
+                                    "fig": fig_diferencia,
+                                    "nombre": f"Dif. 2D: {archivo_a.split('_')[0]} vs {archivo_b.split('_')[0]}",
+                                    "area_diferencia": diferencia_area,
+                                    "archivo_a": archivo_a,
+                                    "archivo_b": archivo_b
+                                }
                             else:
-                                st.info("ℹ️ Las áreas son prácticamente iguales")
-                            
-                            # Botón de descarga del gráfico de diferencia
-                            html_diferencia = fig_diferencia.to_html()
-                            st.download_button(
-                                label="📊 Descargar Gráfico de Diferencia (HTML)",
-                                data=html_diferencia,
-                                file_name=f"diferencia_areas_{archivo_a}_vs_{archivo_b}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                                mime="text/html"
-                            )
-                            
-                        else:
-                            st.error("❌ No se pudo calcular la diferencia. Verifique que los sub-archivos tengan datos válidos.")
-                else:
-                    st.warning("⚠️ Seleccione dos sub-archivos diferentes para calcular la diferencia.")
+                                st.error("❌ No se pudo calcular la diferencia.")
+                                if 'figura_diferencia_temporal' in st.session_state:
+                                    del st.session_state.figura_diferencia_temporal
+                    else:
+                        st.warning("⚠️ Seleccione dos sub-archivos diferentes para calcular la diferencia.")
+
+                # PARTE 2: Este bloque está AFUERA del anterior. Revisa si hay algo en la "bandeja" temporal.
+                # Si hay algo, lo muestra junto con TODOS sus botones (Guardar, métricas, descarga).
+                if 'figura_diferencia_temporal' in st.session_state:
+                    # Recuperamos los datos de la sesión que guardamos en la PARTE 1
+                    temp_data = st.session_state.figura_diferencia_temporal
+                    fig_diferencia = temp_data["fig"]
+                    nombre_guardado = temp_data["nombre"]
+                    diferencia_area = temp_data["area_diferencia"]
+                    archivo_a_calc = temp_data["archivo_a"]
+                    archivo_b_calc = temp_data["archivo_b"]
+                    
+                    # 1. Mostramos el gráfico
+                    st.plotly_chart(fig_diferencia, use_container_width=False)
+                    
+                    # 2. Mostramos el botón de "Guardar". Ahora sí funcionará.
+                    if st.button("💾 Guardar Diferencia para Visualizar", key="save_diff_2d_for_viz_final"):
+                        if 'diferencias_guardadas' not in st.session_state:
+                            st.session_state.diferencias_guardadas = {}
+                        st.session_state.diferencias_guardadas[nombre_guardado] = fig_diferencia
+                        st.success(f"✅ Gráfico '{nombre_guardado}' guardado permanentemente.")
+                        # Borramos la figura temporal después de guardarla para limpiar la "bandeja"
+                        del st.session_state.figura_diferencia_temporal
+                        st.rerun()
+
+                    # 3. Mostramos las métricas y el resto de tu código (sin cambios)
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    z_a, p_a = extraer_datos_para_grafico(st.session_state.sub_archivos_generados[archivo_a_calc], st.session_state.configuracion_inicial)
+                    z_b, p_b = extraer_datos_para_grafico(st.session_state.sub_archivos_generados[archivo_b_calc], st.session_state.configuracion_inicial)
+                    area_a = calcular_area_bajo_curva(z_a, p_a)
+                    area_b = calcular_area_bajo_curva(z_b, p_b)
+                    
+                    with col_m1:
+                        st.metric(f"Área {st.session_state.sub_archivos_generados[archivo_a_calc]['archivo_fuente']}", f"{area_a:.2f} Pa·mm")
+                    with col_m2:
+                        st.metric(f"Área {st.session_state.sub_archivos_generados[archivo_b_calc]['archivo_fuente']}", f"{area_b:.2f} Pa·mm")
+                    with col_m3:
+                        st.metric("Diferencia de Áreas", f"{diferencia_area:.2f} Pa·mm", delta=f"{diferencia_area:.2f}", delta_color="normal" if diferencia_area >= 0 else "inverse")
+                    
+                    if diferencia_area > 0:
+                        st.success(f"✅ El área de **{st.session_state.sub_archivos_generados[archivo_a_calc]['archivo_fuente']}** es **{diferencia_area:.2f} Pa·mm** mayor que la de **{st.session_state.sub_archivos_generados[archivo_b_calc]['archivo_fuente']}**")
+                    elif diferencia_area < 0:
+                        st.info(f"ℹ️ El área de **{st.session_state.sub_archivos_generados[archivo_b_calc]['archivo_fuente']}** es **{abs(diferencia_area):.2f} Pa·mm** mayor que la de **{st.session_state.sub_archivos_generados[archivo_a_calc]['archivo_fuente']}**")
+                    else:
+                        st.info("ℹ️ Las áreas son prácticamente iguales")
+                    
+                    html_diferencia = fig_diferencia.to_html()
+                    st.download_button(
+                        label="📊 Descargar Gráfico de Diferencia (HTML)",
+                        data=html_diferencia,
+                        file_name=f"diferencia_areas_{archivo_a_calc}_vs_{archivo_b_calc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                        mime="text/html"
+                    )
 
 elif st.session_state.seccion_actual == 'betz_3d':
     st.markdown("# 🌪️ BETZ 3D - Análisis Tridimensional")
@@ -1616,7 +1725,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         """, unsafe_allow_html=True)
     
     # Mostrar configuración actual
-    if 'configuracion_3d' in st.session_state:
+    if st.session_state.get('configuracion_3d'): # <-- MODIFICA ESTA LÍNEA
         st.markdown("## ⚙️ Configuración 3D Actual")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1633,14 +1742,13 @@ elif st.session_state.seccion_actual == 'betz_3d':
         if 'archivos_3d_cargados' not in st.session_state:
             st.session_state.archivos_3d_cargados = {}
 
+        uploaded_files_3d = []
         uploaded_files_3d = st.file_uploader(
-            "Seleccione uno o más archivos CSV para análisis 3D:",
-            type=['csv'],
-            accept_multiple_files=True,
-            help="Archivos con datos de múltiples posiciones X, Y y sensores de presión",
-            key="upload_3d"
-        )
-
+        "Seleccione uno o más archivos CSV:",
+        type=['csv'],
+        accept_multiple_files=True,
+        key="uploader_betz3d"  # clave única para BETZ 3D
+    )
         if uploaded_files_3d:
             for uploaded_file_3d in uploaded_files_3d:
                 nombre_archivo = uploaded_file_3d.name.replace('.csv', '').replace('incertidumbre_', '')
@@ -1767,7 +1875,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
                                     )
                                     
                                     if fig_individual:
-                                        st.plotly_chart(fig_individual, use_container_width=True)
+                                        st.plotly_chart(fig_individual, use_container_width=False)
                                         
                                         # Información del archivo
                                         st.success(f"✅ Superficie de malla 3D generada para: **{nombre_archivo}** usando {len(fig_individual.data[0].x)} vértices.")
@@ -1784,6 +1892,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
                                     else:
                                         st.error(f"❌ No se pudo generar la superficie de malla 3D para {nombre_archivo}")   
         # --- NUEVO PASO 4: DIFERENCIA ENTRE SUPERFICIES ---
+        # --- PASO 4: DIFERENCIA ENTRE SUPERFICIES (Delaunay) ---
         st.markdown("## ➖ Paso 4: Diferencia entre Superficies (Delaunay)")
         if len(st.session_state.get('archivos_3d_cargados', {})) >= 2:
             st.info("Calcula la diferencia (A - B) entre dos superficies usando triangulación de Delaunay.")
@@ -1804,7 +1913,10 @@ elif st.session_state.seccion_actual == 'betz_3d':
                     index=1 if len(archivos_disponibles_diff) > 1 else 0,
                     key="diff_3d_b"
                 )
+            
+            # --- INICIO DE LA ESTRUCTURA CORREGIDA ---
 
+            # PARTE 1: El botón "Calcular" solo genera el gráfico y lo guarda en una "bandeja" temporal.
             if st.button("Calcular Diferencia de Superficies", use_container_width=True, type="primary"):
                 if archivo_a == archivo_b:
                     st.error("Por favor, selecciona dos archivos diferentes para comparar.")
@@ -1813,7 +1925,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
                         datos_a = st.session_state.archivos_3d_cargados[archivo_a]
                         datos_b = st.session_state.archivos_3d_cargados[archivo_b]
                         
-                        fig_diferencia = crear_superficie_diferencia_delaunay_3d(
+                        fig_diferencia_3d = crear_superficie_diferencia_delaunay_3d(
                                             datos_a,
                                             datos_b,
                                             archivo_a,
@@ -1821,21 +1933,149 @@ elif st.session_state.seccion_actual == 'betz_3d':
                                             st.session_state.configuracion_3d
                                         )
 
-                        if fig_diferencia:
-                            st.plotly_chart(fig_diferencia, use_container_width=True)          
+                        if fig_diferencia_3d:
+                            # Guardamos la figura y su nombre en la sesión para que sobrevivan al reinicio de la página.
+                            st.session_state.figura_diferencia_temporal_3d = {
+                                "fig": fig_diferencia_3d,
+                                "nombre": f"Dif. 3D: {archivo_a} vs {archivo_b}"
+                            }
+                        else:
+                            if 'figura_diferencia_temporal_3d' in st.session_state:
+                                del st.session_state.figura_diferencia_temporal_3d
+            
+            # PARTE 2: Este bloque (fuera del anterior) revisa si hay algo en la "bandeja" temporal y lo muestra.
+            if 'figura_diferencia_temporal_3d' in st.session_state:
+                temp_data_3d = st.session_state.figura_diferencia_temporal_3d
+                fig_diferencia_3d = temp_data_3d["fig"]
+                nombre_guardado_3d = temp_data_3d["nombre"]
+
+                # 1. Mostramos el gráfico
+                st.plotly_chart(fig_diferencia_3d, use_container_width=False)
+                
+                # 2. Mostramos el botón "Guardar". Ahora sí funcionará.
+                if st.button("💾 Guardar Diferencia para Visualizar", key="save_diff_3d_for_viz_final"):
+                    if 'diferencias_guardadas' not in st.session_state:
+                        st.session_state.diferencias_guardadas = {}
+                    
+                    st.session_state.diferencias_guardadas[nombre_guardado_3d] = fig_diferencia_3d
+                    st.success(f"✅ Gráfico '{nombre_guardado_3d}' guardado permanentemente.")
+                    
+                    # Borramos la figura temporal después de guardarla para limpiar la "bandeja"
+                    del st.session_state.figura_diferencia_temporal_3d
+                    st.rerun()
+            # --- FIN DE LA ESTRUCTURA CORREGIDA ---
+
         else:
-            st.info("📁 Sube archivos 3D para comenzar la visualización")
+            st.info("Carga al menos dos archivos 3D para poder calcular una diferencia.")
 
     else:
         st.info("⚙️ Complete la configuración 3D para continuar")
+
+elif st.session_state.seccion_actual == 'visualizacion':
+    st.markdown("# 🖥️ Visualización de Resultados")
+    st.markdown("Agrega y compara gráficos 2D y 3D generados en BETZ.")
+
+    # Inicializar contenedores de guardado si no existen
+    if "graficos_guardados" not in st.session_state:
+        st.session_state.graficos_guardados = []
+
+    if "diferencias_guardadas" not in st.session_state:
+        st.session_state.diferencias_guardadas = {}
+
+    # Variables de estado seguras (evitan KeyError)
+    sub_archivos_2d = st.session_state.get("sub_archivos_generados", {})
+    sub_archivos_3d = st.session_state.get("sub_archivos_3d_generados", {})
+    config_2d = st.session_state.get("configuracion_inicial", {})
+    config_3d = st.session_state.get("configuracion_3d", {})
+    diferencias_guardadas = st.session_state.get("diferencias_guardadas", {})
+
+    # --- Selector único que une 2D, 3D y diferencias guardadas ---
+    opciones = list(sub_archivos_2d.keys()) + list(sub_archivos_3d.keys()) + list(diferencias_guardadas.keys())
+    if st.session_state.get("configuracion_inicial"):
+        posiciones_sensores = calcular_posiciones_sensores(
+            st.session_state.configuracion_inicial['distancia_toma_12'],
+            st.session_state.configuracion_inicial['distancia_entre_tomas'],
+            st.session_state.configuracion_inicial['orden']
+        )
+    else:
+        posiciones_sensores = {}
+    if opciones:
+        seleccionado = st.selectbox("Selecciona un resultado para agregar", opciones)
+
+        if st.button("➕ Agregar a Visualización"):
+            fig = None
+
+            # Caso: sub-archivo 2D
+            if seleccionado in sub_archivos_2d:
+                # crear_grafico_betz_concatenado espera un dict de sub-archivos seleccionados
+                fig = crear_grafico_betz_concatenado(
+                    {seleccionado: sub_archivos_2d[seleccionado]},
+                    posiciones_sensores,
+                    st.session_state.configuracion_inicial
+                )
+
+            # Caso: sub-archivo 3D
+            elif seleccionado in sub_archivos_3d:
+                fig_data = sub_archivos_3d[seleccionado]
+                fig = crear_superficie_delaunay_3d(
+                    fig_data.get('datos', pd.DataFrame()),
+                    config_3d,
+                    fig_data.get('archivo_fuente', seleccionado)
+                )
+
+            # Caso: gráfico de diferencia ya guardado (2D o 3D)
+            elif seleccionado in diferencias_guardadas:
+                fig = diferencias_guardadas[seleccionado]
+
+            # Si obtuvimos una figura, la guardamos en la lista de gráficos agregados
+            if fig:
+                # Guardamos una tupla (titulo, figura) para mostrar título más tarde
+                st.session_state.graficos_guardados.append((seleccionado, fig))
+                st.success(f"✅ '{seleccionado}' agregado a la visualización")
+                st.rerun()
+    else:
+        st.info("No hay resultados 2D o 3D disponibles para visualizar. Procesa/guarda alguno en BETZ 2D o BETZ 3D.")
+
+    # --- SECCIÓN PARA MOSTRAR Y ELIMINAR LOS GRÁFICOS AGREGADOS ---
+    if st.session_state.graficos_guardados:
+        st.markdown("---")
+        st.markdown("### Gráficos Agregados")
+
+        if st.button("🗑️ Limpiar todos los gráficos"):
+            st.session_state.graficos_guardados = []
+            st.rerun()
+
+        cols = st.columns(2)
+
+        # Iteramos sobre una copia de la lista para poder modificar la original
+        for i, (titulo, fig) in enumerate(list(st.session_state.graficos_guardados)):
+            with cols[i % 2]:
+                st.markdown(f"#### {titulo}")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Botón para eliminar ese gráfico concreto
+                # Key única que combina índice + título (evita colisiones)
+                if st.button("❌ Eliminar Gráfico", key=f"eliminar_{i}_{titulo}"):
+                    # eliminar por índice
+                    st.session_state.graficos_guardados.pop(i)
+                    st.success(f"Gráfico '{titulo}' eliminado")
+                    st.rerun()
+
+    # (Opcional) zona para descargas globales o métricas adicionales
+    st.markdown("---")
+    st.markdown("### 🔽 Descargas / Resumen rápido")
+    if st.session_state.graficos_guardados:
+        st.write(f"Gráficos en el lienzo: {len(st.session_state.graficos_guardados)}")
+    else:
+        st.write("No hay gráficos en el lienzo actualmente.")
 
 # Footer
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #6b7280; padding: 2rem;'>
     <p><strong>Laboratorio de Aerodinámica y Fluidos - UTN HAEDO</strong></p>
-    <p>Sistema de Análisis de Datos Aerodinámicos • Versión 2.2 - MEJORADO</p>
-    <p>Desarrollado con ❤️ usando Streamlit y Python</p>
+    <p>Sistema de Análisis de Datos Aerodinámicos • Versión 1.37 - </p>
     <p><small>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small></p>
 </div>
 """, unsafe_allow_html=True)
+
