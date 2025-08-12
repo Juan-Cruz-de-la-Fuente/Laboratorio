@@ -177,27 +177,134 @@ if 'diferencias_guardadas' not in st.session_state:
     st.session_state.diferencias_guardadas = {}
 
 def extraer_tiempo_y_coordenadas(nombre_archivo):
-    """Extraer tiempo y coordenadas X, Y del nombre del archivo"""
+    """Extraer tiempo y coordenadas X, Y del nombre del archivo.
+    Soporta formatos nuevos como:
+        XY_SapySync_X_1_Y_180_250811164701_10.CSV  -> tiempo=10, X=1, Y=180
+    y formatos antiguos (T10s, X0, Y0, X-0, etc).
+    """
     tiempo = None
     x_coord = None
     y_coord = None
-    
-    # Extraer tiempo después de "T" (ej: T10s, T20s)
-    tiempo_match = re.search(r"[Tt](\d+)s", nombre_archivo)
-    if tiempo_match:
-        tiempo = int(tiempo_match.group(1))
-    
-    # Extraer coordenada X (ej: X-0, X0, X=0)
-    x_match = re.search(r"[Xx][-=]?(\d+)", nombre_archivo)
+
+    # Normalizar nombre sin extensión
+    nombre = os.path.basename(str(nombre_archivo))
+    nombre_sin_ext = re.sub(r'\.\w+$', '', nombre)
+
+    # 1) Intentar extraer tiempo como último token separado por '_' (ej. ..._10)
+    partes = nombre_sin_ext.split('_')
+    if partes and partes[-1].isdigit():
+        try:
+            tiempo = int(partes[-1])
+        except:
+            tiempo = None
+
+    # 2) Fallback: patrones T10s o T10
+    if tiempo is None:
+        tiempo_match = re.search(r"[Tt](\d+)\s*[sS]?$", nombre_sin_ext)
+        if tiempo_match:
+            tiempo = int(tiempo_match.group(1))
+
+    # 3) Extraer X y Y con varios posibles formatos: X_1, X1, X=1, X-1
+    x_match = re.search(r"[Xx][_\-=]?(-?\d+)", nombre_sin_ext)
     if x_match:
-        x_coord = int(x_match.group(1))
-    
-    # Extraer coordenada Y (ej: Y-0, Y0, Y=0)  
-    y_match = re.search(r"[Yy][-=]?(\d+)", nombre_archivo)
+        try:
+            x_coord = int(x_match.group(1))
+        except:
+            x_coord = None
+
+    y_match = re.search(r"[Yy][_\-=]?(-?\d+)", nombre_sin_ext)
     if y_match:
-        y_coord = int(y_match.group(1))
-    
+        try:
+            y_coord = int(y_match.group(1))
+        except:
+            y_coord = None
+
+    # 4) Si aún no encontró mediante regex, intentar buscar tokens tipo X<number> o Y<number>
+    if x_coord is None:
+        m = re.search(r"[Xx]\s*(\d+)", nombre_sin_ext)
+        if m:
+            x_coord = int(m.group(1))
+    if y_coord is None:
+        m = re.search(r"[Yy]\s*(\d+)", nombre_sin_ext)
+        if m:
+            y_coord = int(m.group(1))
+
     return tiempo, x_coord, y_coord
+
+def normalizar_nombre_sensor(sensor_text):
+    """Normaliza una entrada de cabecera de sensor a 'Presion-Sensor N' (N entero global).
+       Acepta formatos como:
+         - 'Presion-Sensor_0_1' -> 'Presion-Sensor 1'
+         - 'Presion-Sensor_1_12' -> 'Presion-Sensor 24'
+         - 'Presion-Sensor 5' -> 'Presion-Sensor 5'
+       Devuelve None si no puede normalizar.
+    """
+    if pd.isna(sensor_text):
+        return None
+    s = str(sensor_text).strip()
+    if not s:
+        return None
+
+    # Caso 'Presion-Sensor_offset_index' (ej 'Presion-Sensor_1_3')
+    m = re.search(r'(?i)presion[-_ ]*sensor[_\-]?(\d+)[_\-](\d+)', s)
+    if m:
+        offset = int(m.group(1))
+        idx = int(m.group(2))
+        sensor_global = offset * 12 + idx
+        return f"Presion-Sensor {sensor_global}"
+
+    # Caso 'Presion-Sensor 12' o 'Presion-Sensor_12'
+    m2 = re.search(r'(?i)presion[-_ ]*sensor[_\-\s]*(\d+)', s)
+    if m2:
+        sensor_global = int(m2.group(1))
+        return f"Presion-Sensor {sensor_global}"
+
+    # Caso donde venga solo un número al final
+    nums = re.findall(r'(\d+)', s)
+    if nums:
+        # si hay dos números, considerar que puede ser offset,index
+        if len(nums) >= 2:
+            offset = int(nums[-2])
+            idx = int(nums[-1])
+            if 0 <= offset <= 9 and 1 <= idx <= 12:
+                sensor_global = offset * 12 + idx
+                return f"Presion-Sensor {sensor_global}"
+        # si hay uno solo, usarlo como número de sensor
+        sensor_global = int(nums[-1])
+        return f"Presion-Sensor {sensor_global}"
+
+    # Si no se reconoce, devolver la cadena original (por si acaso)
+    return s
+
+
+def obtener_numero_sensor_desde_columna(col_name):
+    """Devuelve el número entero del sensor si el nombre de columna tiene 'Presion-Sensor N' (o similar), sino None."""
+    if pd.isna(col_name):
+        return None
+    s = str(col_name)
+    m = re.search(r'(?i)presion[-_ ]*sensor[_\-\s]*(\d+)', s)
+    if m:
+        return int(m.group(1))
+    # si no coincide, intentar extraer último número
+    nums = re.findall(r'(\d+)', s)
+    if nums:
+        return int(nums[-1])
+    return None
+
+
+def sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden="asc"):
+    """Dado sensor_num global (1..36), calcula la altura física real (z_total).
+       Se asume que hay 12 tomas por columna; se mapea sensor_num -> toma_index (1..12).
+    """
+    if sensor_num is None:
+        return None
+    # índice dentro de la docena (1..12)
+    toma_index = ((int(sensor_num) - 1) % 12) + 1
+    if orden == "asc":
+        z_total = y_traverser + posicion_inicial + (toma_index - 1) * distancia_entre_tomas
+    else:  # 'des'
+        z_total = y_traverser + posicion_inicial + (12 - toma_index) * distancia_entre_tomas
+    return z_total
 
 def extraer_nombre_base_archivo(nombre_archivo):
     """Extraer nombre base del archivo (sin extensión y sin 'incertidumbre_')"""
@@ -206,11 +313,10 @@ def extraer_nombre_base_archivo(nombre_archivo):
     return ' '.join(word.capitalize() for word in nombre_base.split())
 
 def procesar_promedios(archivo_csv, orden="asc"):
-    """Procesar archivo de incertidumbre siguiendo exactamente el código de referencia"""
+    """Procesar archivo de incertidumbre adaptado a nuevos formatos de cabeceras de sensores."""
     try:
-        # Leer el archivo CSV exactamente como en el código de referencia
-        df_raw = pd.read_csv(archivo_csv, sep=";", header=None)
-        
+        df_raw = pd.read_csv(archivo_csv, sep=";", header=None, dtype=str)  # leer como texto para robustez
+
         # Buscar la palabra "importante" para determinar dónde terminar
         index_final = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains("importante", case=False).any(), axis=1)].index
         if not index_final.empty:
@@ -218,42 +324,88 @@ def procesar_promedios(archivo_csv, orden="asc"):
 
         resultados = []
 
-        # Procesar bloques de 10 filas exactamente como en el código de referencia
+        # Procesar bloques de 10 filas (misma lógica base)
         for i in range(0, df_raw.shape[0], 10):
             bloque = df_raw.iloc[i:i+10]
             if bloque.empty or len(bloque) < 3:
                 continue
 
             archivo = bloque.iloc[0, 0]
-            sensores = bloque.iloc[0, 1:].tolist()
-            valores = bloque.iloc[2, 1:].tolist()
-            muestras = bloque.iloc[1, 1]
+            raw_sensores = bloque.iloc[0, 1:].tolist()
+            raw_valores = bloque.iloc[2, 1:].tolist()
+            muestras = bloque.iloc[1, 1] if 1 < bloque.shape[1] else None
 
-            # SIMPLIFICAR: No hacer inversión aquí, dejar los datos como vienen
+            # Normalizar: si la cabecera vino entera en una sola celda separada por ';'
+            sensores_lista = []
+            for entry in raw_sensores:
+                if pd.isna(entry):
+                    continue
+                s = str(entry).strip()
+                if ';' in s:
+                    partes = [p.strip() for p in s.split(';') if p.strip()]
+                    sensores_lista.extend(partes)
+                else:
+                    sensores_lista.append(s)
+
+            # Lo mismo para valores: si hay una celda con ;, expandir
+            valores_lista = []
+            for entry in raw_valores:
+                if pd.isna(entry):
+                    continue
+                s = str(entry).strip()
+                if ';' in s:
+                    partes = [p.strip() for p in s.split(';')]
+                    valores_lista.extend(partes)
+                else:
+                    valores_lista.append(s)
+
+            # Si por alguna razón no se alinean en longitud, intentar alinear truncando o rellenando con None
+            n = max(len(sensores_lista), len(valores_lista))
+            sensores_lista = (sensores_lista + [None] * n)[:n]
+            valores_lista = (valores_lista + [None] * n)[:n]
+
             fila = {
                 "Archivo": archivo,
                 "Numero de muestras": muestras,
             }
-            for sensor, valor in zip(sensores, valores):
-                if pd.notna(sensor):
-                    fila[sensor] = valor
+
+            # Mapear cada sensor raw -> nombre normalizado y poner su valor
+            for sensor_raw, valor_raw in zip(sensores_lista, valores_lista):
+                nombre_sensor_norm = normalizar_nombre_sensor(sensor_raw)
+                if nombre_sensor_norm is None:
+                    continue
+                # limpiar y convertir valor (coma -> punto)
+                valor = valor_raw
+                if isinstance(valor, str):
+                    valor = valor.replace(',', '.').strip()
+                try:
+                    valor_num = float(valor) if (valor is not None and str(valor) != '') else np.nan
+                except:
+                    valor_num = np.nan
+
+                fila[nombre_sensor_norm] = valor_num
 
             resultados.append(fila)
 
         df_resultado = pd.DataFrame(resultados)
 
-        # Extraer tiempo y coordenadas desde nombre de archivo
-        coordenadas_tiempo = df_resultado["Archivo"].apply(extraer_tiempo_y_coordenadas)
-        
-        df_resultado["Tiempo (s)"] = [coord[0] for coord in coordenadas_tiempo]
-        df_resultado["X_coord"] = [coord[1] for coord in coordenadas_tiempo]
-        df_resultado["Y_coord"] = [coord[2] for coord in coordenadas_tiempo]
+        # Extraer tiempo y coordenadas desde nombre de archivo (columna "Archivo")
+        if "Archivo" in df_resultado.columns:
+            coordenadas_tiempo = df_resultado["Archivo"].apply(extraer_tiempo_y_coordenadas)
+            df_resultado["Tiempo (s)"] = [coord[0] for coord in coordenadas_tiempo]
+            df_resultado["X_coord"] = [coord[1] for coord in coordenadas_tiempo]
+            df_resultado["Y_coord"] = [coord[2] for coord in coordenadas_tiempo]
+        else:
+            df_resultado["Tiempo (s)"] = None
+            df_resultado["X_coord"] = None
+            df_resultado["Y_coord"] = None
 
         return df_resultado
-    
+
     except Exception as e:
         st.error(f"Error al procesar archivo: {str(e)}")
         return None
+
 
 def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archivo_fuente):
     """
@@ -286,36 +438,34 @@ def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archi
     return sub_archivos
 
 def calcular_posiciones_sensores(distancia_toma_12, distancia_entre_tomas, orden="asc"):
-    """Calcular posiciones geométricas de los sensores según el orden especificado"""
+    """Calcular posiciones geométricas de los sensores según el orden especificado.
+       Ahora genera posiciones para sensores 1..36 (soporte docenas).
+    """
     posiciones = {}
-    
-    if orden == "asc":
-        # Ascendente: sensor 1 más abajo, sensor 12 más arriba
-        for i in range(1, 13):  # Sensores 1 a 12
-            y_position = distancia_toma_12 + (i - 1) * distancia_entre_tomas
-            posiciones[f"Presion-Sensor {i}"] = {
-                'x': 0,
-                'y': y_position,
-                'sensor_fisico': i
-            }
-    else:  # "des"
-        # Descendente: sensor 12 más abajo, sensor 1 más arriba
-        for i in range(1, 13):  # Sensores 1 a 12
-            y_position = distancia_toma_12 + (12 - i) * distancia_entre_tomas
-            posiciones[f"Presion-Sensor {i}"] = {
-                'x': 0,
-                'y': y_position,
-                'sensor_fisico': i
-            }
-    
+
+    for sensor_num in range(1, 37):  # 1..36
+        # índice dentro de la docena (1..12)
+        toma_index = ((sensor_num - 1) % 12) + 1
+        if orden == "asc":
+            y_position = distancia_toma_12 + (toma_index - 1) * distancia_entre_tomas
+        else:  # 'des'
+            y_position = distancia_toma_12 + (12 - toma_index) * distancia_entre_tomas
+
+        posiciones[f"Presion-Sensor {sensor_num}"] = {
+            'x': 0,
+            'y': y_position,
+            'sensor_fisico': sensor_num
+        }
+
     return posiciones
 
 def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensores, configuracion):
     """
     Crea un gráfico BETZ concatenado con relleno de área, ejes negros y leyenda.
+    Ahora detecta dinámicamente las columnas 'Presion-Sensor N' (1..36).
     """
     fig = go.Figure()
-    
+
     posicion_inicial = configuracion['distancia_toma_12']
     distancia_entre_tomas = configuracion['distancia_entre_tomas']
     n_tomas = 12
@@ -331,37 +481,41 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
     for grupo, sub_archivos_del_grupo in datos_agrupados.items():
         archivo_fuente, tiempo = grupo
         color = colores_por_tiempo.get(tiempo, '#333333')
-        
+
         z_grupo, presion_grupo = [], []
 
         for sub_archivo in sub_archivos_del_grupo:
             datos_tiempo = sub_archivo['datos']
+            # detectar columnas de sensores
+            sensor_cols = [c for c in datos_tiempo.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+
             for _, fila in datos_tiempo.iterrows():
-                y_traverser = fila['Y_coord'] if pd.notna(fila['Y_coord']) else 0
-                
-                for toma_fisica in range(1, n_tomas + 1):
-                    if configuracion['orden'] == "asc":
-                        sensor_columna = f"Presion-Sensor {toma_fisica}"
-                        z_total = y_traverser + posicion_inicial + (toma_fisica - 1) * distancia_entre_tomas
-                    else:
-                        sensor_numero = 13 - toma_fisica
-                        sensor_columna = f"Presion-Sensor {sensor_numero}"
-                        z_total = y_traverser + posicion_inicial + (toma_fisica - 1) * distancia_entre_tomas
-                    
-                    if sensor_columna in datos_tiempo.columns:
-                        presion = fila[sensor_columna]
-                        try:
-                            presion_grupo.append(float(str(presion).replace(',', '.')))
-                            z_grupo.append(z_total)
-                        except (ValueError, TypeError):
-                            continue
-        
+                y_traverser = fila.get('Y_coord', 0) if pd.notna(fila.get('Y_coord', np.nan)) else 0
+
+                for col in sensor_cols:
+                    sensor_num = obtener_numero_sensor_desde_columna(col)
+                    if sensor_num is None:
+                        continue
+                    z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, configuracion.get('orden', 'asc'))
+                    presion = fila.get(col, None)
+                    if pd.isna(presion) or presion is None:
+                        continue
+                    try:
+                        if isinstance(presion, str):
+                            presion = float(presion.replace(',', '.'))
+                        else:
+                            presion = float(presion)
+                        presion_grupo.append(presion)
+                        z_grupo.append(z_total)
+                    except (ValueError, TypeError):
+                        continue
+
         if z_grupo and presion_grupo:
             datos_ordenados = sorted(zip(z_grupo, presion_grupo))
             z_ordenado, presion_ordenada = zip(*datos_ordenados)
-            
+
             nombre_leyenda = f"{archivo_fuente} - T{tiempo}s"
-            
+
             fig.add_trace(go.Scatter(
                 x=presion_ordenada,
                 y=z_ordenado,
@@ -373,6 +527,7 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
                 hovertemplate=f'<b>{nombre_leyenda}</b><br>Presión: %{{x:.3f}} Pa<br>Altura: %{{y:.1f}} mm<extra></extra>'
             ))
 
+    # (mantener layout como en tu versión original)
     fig.update_layout(
         title=dict(text="Perfil de Presión Concatenado", font=dict(color='black')),
         xaxis_title="Presión Total [Pa]",
@@ -388,73 +543,63 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
             bordercolor='black',
             borderwidth=1
         ),
-        xaxis=dict(
-            showgrid=True, gridcolor="#e5e7eb",
-            zeroline=True, zerolinecolor='black',
-            title_font=dict(color='black'),
-            tickfont=dict(color='black')
-        ),
-        yaxis=dict(
-            showgrid=True, gridcolor="#e5e7eb",
-            zeroline=True, zerolinecolor='black',
-            title_font=dict(color='black'),
-            tickfont=dict(color='black')
-        )
+        xaxis=dict(showgrid=True, gridcolor="#e5e7eb", zeroline=True, zerolinecolor='black'),
+        yaxis=dict(showgrid=True, gridcolor="#e5e7eb", zeroline=True, zerolinecolor='black')
     )
     fig.update_layout(
-    width=1600,  # más ancho
-    height=900,  # más alto
-    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
+        width=1600,
+        height=900,
+        margin=dict(l=0, r=0, t=50, b=0)
     )
-    
     return fig
 
+
 def extraer_datos_para_grafico(sub_archivo, configuracion):
-    """Extraer datos de presión y altura de un sub-archivo para gráficos (múltiples posiciones)"""
+    """Extraer datos de presión y altura de un sub-archivo para gráficos (múltiples posiciones).
+       Ahora soporta sensores numerados 1..36 y mapea la altura según el número de sensor.
+    """
     datos_tiempo = sub_archivo['datos']
     distancia_entre_tomas = configuracion['distancia_entre_tomas']
-    
+    posicion_inicial = configuracion.get('distancia_toma_12', 0)
+    orden = configuracion.get('orden', 'asc')
+
     z_datos = []
     presion_datos = []
-    
-    # Procesar TODAS las filas (múltiples posiciones)
+
+    # Definir columnas de sensores detectadas en el DataFrame
+    posibles_cols = [c for c in datos_tiempo.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+    # Iterar cada fila (posiciones Y posibles)
     for _, fila in datos_tiempo.iterrows():
-        y_traverser = fila['Y_coord']
-        
-        # Procesar cada toma física
-        for toma_fisica in range(1, 13):
-            if configuracion['orden'] == "asc":
-                # Ascendente: leer sensores del 1 al 12
-                sensor_columna = f"Presion-Sensor {toma_fisica}"
-            else:
-                # Descendente: leer sensores del 12 al 1
-                sensor_numero = 13 - toma_fisica
-                sensor_columna = f"Presion-Sensor {sensor_numero}"
-            
-            if sensor_columna in datos_tiempo.columns:
-                # Calcular posición Z total (altura)
-                z_total = y_traverser + (toma_fisica - 1) * distancia_entre_tomas
-                
-                # Obtener presión
-                presion = fila[sensor_columna]
-                
-                try:
-                    if isinstance(presion, str):
-                        presion = float(presion.replace(',', '.'))
-                    
-                    z_datos.append(z_total)
-                    presion_datos.append(presion)
-                    
-                except:
-                    continue
-    
+        y_traverser = fila.get('Y_coord', 0) if pd.notna(fila.get('Y_coord', np.nan)) else 0
+
+        # Para cada columna detectada, calcular su altura real y tomar el valor
+        for col in posibles_cols:
+            sensor_num = obtener_numero_sensor_desde_columna(col)
+            if sensor_num is None:
+                continue
+            z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
+
+            # Leer presión y convertir
+            presion = fila.get(col, None)
+            if pd.isna(presion) or presion is None:
+                continue
+            try:
+                if isinstance(presion, str):
+                    presion = presion.replace(',', '.').strip()
+                presion_val = float(presion)
+                z_datos.append(z_total)
+                presion_datos.append(presion_val)
+            except (ValueError, TypeError):
+                continue
+
     # Ordenar por altura
     if z_datos and presion_datos:
         datos_ordenados = sorted(zip(z_datos, presion_datos))
         z_ordenado, presion_ordenada = zip(*datos_ordenados)
         return list(z_ordenado), list(presion_ordenada)
-    
+
     return [], []
+
 
 def calcular_area_bajo_curva(z_datos, presion_datos):
     """Calcular área bajo la curva usando regla del trapecio"""
@@ -475,51 +620,42 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
     entre dos archivos usando triangulación de Delaunay.
     """
     try:
-        # Extrae la configuración
         posicion_inicial = configuracion_3d['distancia_toma_12']
         distancia_entre_tomas = configuracion_3d['distancia_entre_tomas']
         orden = configuracion_3d['orden']
-        n_tomas = 12
 
         def extraer_puntos(datos):
             puntos = {}
+            sensor_cols = [c for c in datos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
             for _, fila in datos.iterrows():
-                x_traverser = fila['X_coord']
-                y_traverser = fila['Y_coord']
-
+                x_traverser = fila.get('X_coord', None)
+                y_traverser = fila.get('Y_coord', None)
                 if pd.isna(x_traverser) or pd.isna(y_traverser):
                     continue
-
-                for toma_fisica in range(1, n_tomas + 1):
-                    # Determinar número de sensor
-                    sensor_numero = toma_fisica if orden == "asc" else n_tomas - toma_fisica + 1
-                    sensor_columna = f"Presion-Sensor {sensor_numero}"
-
-                    # Altura física real
-                    altura_sensor_real = y_traverser + posicion_inicial + (toma_fisica - 1) * distancia_entre_tomas
-
-                    if sensor_columna in fila:
-                        presion = fila[sensor_columna]
-                        try:
-                            if isinstance(presion, str):
-                                presion = float(presion.replace(',', '.'))
-                            if pd.notna(presion):
-                                puntos[(x_traverser, altura_sensor_real)] = presion
-                        except (ValueError, TypeError):
-                            continue
+                for col in sensor_cols:
+                    sensor_num = obtener_numero_sensor_desde_columna(col)
+                    if sensor_num is None:
+                        continue
+                    altura_sensor_real = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
+                    presion = fila.get(col, None)
+                    if pd.isna(presion) or presion is None:
+                        continue
+                    try:
+                        if isinstance(presion, str):
+                            presion = float(presion.replace(',', '.'))
+                        puntos[(x_traverser, altura_sensor_real)] = float(presion)
+                    except (ValueError, TypeError):
+                        continue
             return puntos
 
-        # Obtener diccionarios de puntos y presiones
         puntos_a = extraer_puntos(datos_a)
         puntos_b = extraer_puntos(datos_b)
 
-        # Filtrar solo los puntos comunes en ambas superficies
         puntos_comunes = set(puntos_a.keys()) & set(puntos_b.keys())
         if len(puntos_comunes) < 4:
             st.error("No hay suficientes puntos comunes para generar la resta de superficies.")
             return None
 
-        # Calcular la diferencia de presiones punto a punto
         puntos_x, puntos_y, puntos_z = [], [], []
         for (x, y) in puntos_comunes:
             diff = puntos_a[(x, y)] - puntos_b[(x, y)]
@@ -527,11 +663,9 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
             puntos_y.append(y)
             puntos_z.append(diff)
 
-        # Triangulación
         puntos_2d = np.vstack([puntos_x, puntos_y]).T
         tri = Delaunay(puntos_2d)
 
-        # Crear figura 3D
         fig = go.Figure(data=[go.Mesh3d(
             x=puntos_x,
             y=puntos_y,
@@ -544,13 +678,9 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
             colorbar_title='Δ Presión [Pa]',
             name=f"Diferencia {nombre_a} - {nombre_b}",
             showscale=True,
-            hovertemplate='<b>Diferencia</b><br>' +
-                        'Pos X: %{x:.1f} mm<br>' +
-                        'Altura Z: %{y:.1f} mm<br>' +
-                        'Δ Presión: %{z:.3f} Pa<extra></extra>'
+            hovertemplate='<b>Diferencia</b><br>Pos X: %{x:.1f} mm<br>Altura Z: %{y:.1f} mm<br>Δ Presión: %{z:.3f} Pa<extra></extra>'
         )])
 
-        # Layout
         fig.update_layout(
             title=f"Resta de Superficies 3D - {nombre_a} - {nombre_b}",
             scene=dict(
@@ -560,15 +690,10 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
                 aspectratio=dict(x=1.5, y=2, z=1),
                 camera=dict(eye=dict(x=2, y=-2, z=1.5))
             ),
-            width=1000,
-            height=800,
-            margin=dict(r=20, b=10, l=10, t=50)
+            width=1600,
+            height=900,
+            margin=dict(l=0, r=0, t=50, b=0)
         )
-        fig.update_layout(
-    width=1600,  # más ancho
-    height=900,  # más alto
-    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
-    )
 
         return fig
 
@@ -578,12 +703,12 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
         return None
 
 
+
 def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
     """
-    Resta dos superficies 3D siguiendo la misma lógica de promedios que
-    la función que crea los gráficos individuales.
+    Resta dos superficies 3D: para cada (X,Y) común calcula la media de
+    todas las columnas 'Presion-Sensor N' presentes en esa fila y resta.
     """
-    # 1. Encontrar coordenadas (X, Y) comunes en ambos archivos
     coords_a = set(tuple(row) for row in datos_a[['X_coord', 'Y_coord']].dropna().to_numpy())
     coords_b = set(tuple(row) for row in datos_b[['X_coord', 'Y_coord']].dropna().to_numpy())
     coords_comunes = sorted(list(coords_a & coords_b))
@@ -593,8 +718,7 @@ def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
         return None
 
     X_final, Y_final, Z_final = [], [], []
-    
-    # 2. Iterar por cada posición (X,Y) común
+
     for x_coord, y_coord in coords_comunes:
         fila_a = datos_a[(datos_a['X_coord'] == x_coord) & (datos_a['Y_coord'] == y_coord)]
         fila_b = datos_b[(datos_b['X_coord'] == x_coord) & (datos_b['Y_coord'] == y_coord)]
@@ -602,28 +726,31 @@ def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
         if fila_a.empty or fila_b.empty:
             continue
 
-        # 3. Calcular la presión promedio para el Archivo A (misma lógica que el gráfico individual)
+        # detectar columnas de sensores en cada fila y promediar
+        cols_a = [c for c in fila_a.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+        cols_b = [c for c in fila_b.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+
         presiones_a = []
-        for i in range(1, 13):
-            sensor_col = f"Presion-Sensor {i}"
-            if sensor_col in fila_a.columns and pd.notna(fila_a.iloc[0][sensor_col]):
-                try:
-                    presiones_a.append(float(str(fila_a.iloc[0][sensor_col]).replace(',', '.')))
-                except (ValueError, TypeError):
-                    continue
-        
-        # 4. Calcular la presión promedio para el Archivo B
+        for c in cols_a:
+            try:
+                val = fila_a.iloc[0][c]
+                if isinstance(val, str):
+                    val = float(val.replace(',', '.'))
+                presiones_a.append(float(val))
+            except:
+                continue
+
         presiones_b = []
-        for i in range(1, 13):
-            sensor_col = f"Presion-Sensor {i}"
-            if sensor_col in fila_b.columns and pd.notna(fila_b.iloc[0][sensor_col]):
-                try:
-                    presiones_b.append(float(str(fila_b.iloc[0][sensor_col]).replace(',', '.')))
-                except (ValueError, TypeError):
-                    continue
-        
+        for c in cols_b:
+            try:
+                val = fila_b.iloc[0][c]
+                if isinstance(val, str):
+                    val = float(val.replace(',', '.'))
+                presiones_b.append(float(val))
+            except:
+                continue
+
         if presiones_a and presiones_b:
-            # 5. Restar los promedios para obtener el valor Z de la diferencia
             diferencia = np.mean(presiones_a) - np.mean(presiones_b)
             X_final.append(x_coord)
             Y_final.append(y_coord)
@@ -633,16 +760,16 @@ def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
         st.warning("No se pudieron generar suficientes puntos de diferencia para la superficie.")
         return None
 
-    # 6. Crear la malla y el gráfico de superficie (misma lógica que el gráfico individual)
+    # Crear la malla
     X_unique = sorted(list(set(X_final)))
     Y_unique = sorted(list(set(Y_final)))
     Z_matrix = np.full((len(Y_unique), len(X_unique)), np.nan)
-    
+
     for x, y, z in zip(X_final, Y_final, Z_final):
         iy = Y_unique.index(y)
         ix = X_unique.index(x)
         Z_matrix[iy, ix] = z
-        
+
     X_mesh, Y_mesh = np.meshgrid(X_unique, Y_unique)
 
     fig = go.Figure()
@@ -658,20 +785,13 @@ def crear_superficie_diferencia(datos_a, datos_b, nombre_a, nombre_b):
         scene=dict(
             xaxis_title="Posición X [mm]",
             yaxis_title="Posición Y [mm]",
-            zaxis_title="Diferencia de Presión [Pa]",
-            xaxis=dict(title_font=dict(color="black"), tickfont=dict(color="black")),
-            yaxis=dict(title_font=dict(color="black"), tickfont=dict(color="black")),
-            zaxis=dict(title_font=dict(color="black"), tickfont=dict(color="black"))
+            zaxis_title="Diferencia de Presión [Pa]"
         ),
         font=dict(color="black")
     )
-    fig.update_layout(
-    width=1600,  # más ancho
-    height=900,  # más alto
-    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
-    )
-
+    fig.update_layout(width=1600, height=900, margin=dict(l=0, r=0, t=50, b=0))
     return fig
+
     
 def crear_grafico_diferencia_areas(sub_archivo_a, sub_archivo_b, configuracion):
     """Crear gráfico mostrando la diferencia como UNA sola área"""
@@ -847,11 +967,10 @@ def mostrar_configuracion_sensores(section_key):
 
 def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archivo):
     """
-    Crea una superficie 3D continua a partir de todos los puntos (300)
-    usando Triangulación de Delaunay, respetando el orden de los sensores.
+    Crea una superficie 3D continua a partir de todos los puntos usando Delaunay.
+    Detecta columnas 'Presion-Sensor N' dinámicamente (soporta 1..36).
     """
     try:
-        # Extrae la configuración que tú defines en la app
         posicion_inicial = configuracion_3d['distancia_toma_12']
         distancia_entre_tomas = configuracion_3d['distancia_entre_tomas']
         orden = configuracion_3d['orden']
@@ -859,86 +978,70 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
 
         puntos_x, puntos_y_altura, presiones_z = [], [], []
 
-        # Itera sobre cada una de las 25 posiciones del traverser
-        for _, fila in datos_completos.iterrows():
-            x_traverser = fila['X_coord']
-            y_traverser = fila['Y_coord']
+        # detectar columnas de sensores
+        sensor_cols = [c for c in datos_completos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
 
+        for _, fila in datos_completos.iterrows():
+            x_traverser = fila.get('X_coord', None)
+            y_traverser = fila.get('Y_coord', None)
             if pd.isna(x_traverser) or pd.isna(y_traverser):
                 continue
 
-            # Para cada posición, itera sobre los 12 sensores
-            for toma_fisica in range(1, n_tomas + 1):
-                # Determina qué sensor leer según el orden (ascendente/descendente)
-                if orden == "asc":
-                    sensor_numero = toma_fisica
-                else: # 'des'
-                    sensor_numero = n_tomas - toma_fisica + 1
-                
-                sensor_columna = f"Presion-Sensor {sensor_numero}"
-
-                # Calcula la altura física REAL de este sensor en el espacio
-                # Suma la posición del traverser (Y) a la posición relativa del sensor
-                altura_sensor_real = y_traverser + posicion_inicial + (toma_fisica - 1) * distancia_entre_tomas
-
-                if sensor_columna in fila:
-                    presion = fila[sensor_columna]
-                    try:
-                        if isinstance(presion, str):
-                            presion = float(presion.replace(',', '.'))
-                        
-                        if pd.notna(presion):
-                            puntos_x.append(x_traverser)
-                            puntos_y_altura.append(altura_sensor_real)
-                            presiones_z.append(presion)
-
-                    except (ValueError, TypeError):
-                        continue
+            for col in sensor_cols:
+                sensor_num = obtener_numero_sensor_desde_columna(col)
+                if sensor_num is None:
+                    continue
+                altura_sensor_real = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
+                presion = fila.get(col, None)
+                if pd.isna(presion) or presion is None:
+                    continue
+                try:
+                    if isinstance(presion, str):
+                        presion = float(presion.replace(',', '.'))
+                    presion_val = float(presion)
+                    puntos_x.append(x_traverser)
+                    puntos_y_altura.append(altura_sensor_real)
+                    presiones_z.append(presion_val)
+                except (ValueError, TypeError):
+                    continue
 
         if len(puntos_x) < 4:
             st.error("No hay suficientes datos válidos para generar una superficie.")
             return None
 
-        # Usa la librería 'scipy' para conectar los puntos en el plano (X, Y-Altura)
         puntos_2d_para_triangulacion = np.vstack([puntos_x, puntos_y_altura]).T
         tri = Delaunay(puntos_2d_para_triangulacion)
 
-        # Crea la figura 3D usando una malla (Mesh3d)
         fig = go.Figure(data=[go.Mesh3d(
             x=puntos_x,
             y=puntos_y_altura,
             z=presiones_z,
-            # Las siguientes líneas le dicen a Plotly cómo conectar los puntos para formar triángulos
             i=tri.simplices[:, 0],
             j=tri.simplices[:, 1],
             k=tri.simplices[:, 2],
-            intensity=presiones_z, # El color de la superficie se basa en la presión
+            intensity=presiones_z,
             colorscale='Viridis',
             colorbar_title='Presión [Pa]',
             name='Presión'
         )])
 
-        # Configura los ejes y el título del gráfico
         fig.update_layout(
-            title=f"Superficie de Presión Detallada (300 Puntos) - {nombre_archivo}",
+            title=f"Superficie de Presión Detallada (Puntos) - {nombre_archivo}",
             scene=dict(
                 xaxis_title="Posición X Traverser [mm]",
                 yaxis_title="Altura Física Real del Sensor [mm]",
                 zaxis_title="Presión [Pa]",
-                aspectratio=dict(x=1, y=2, z=0.8) # Ajusta la proporción para verla mejor
+                aspectratio=dict(x=1, y=2, z=0.8)
             ),
             margin=dict(l=0, r=0, b=0, t=40)
         )
-        fig.update_layout(
-    width=1600,  # más ancho
-    height=900,  # más alto
-    margin=dict(l=0, r=0, t=50, b=0)  # opcional: menos márgenes
-    )   
+        fig.update_layout(width=1600, height=900, margin=dict(l=0, r=0, t=50, b=0))
         return fig
 
     except Exception as e:
         st.error(f"Error creando la superficie de malla 3D: {str(e)}")
         return None
+
     
 def crear_sub_archivos_3d_por_tiempo_y_posicion(df_datos, nombre_archivo):
     """Crear sub-archivos 3D por tiempo y posición (similar a 2D)"""
