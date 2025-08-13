@@ -614,10 +614,9 @@ def calcular_area_bajo_curva(z_datos, presion_datos):
     
     return abs(area)
 
-def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b, configuracion_3d):
+def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b, configuracion_3d, mostrar_puntos=True):
     """
-    Crea una superficie 3D con la diferencia punto a punto de presiones
-    entre dos archivos usando triangulación de Delaunay.
+    Crea una superficie 3D de diferencias con Delaunay y mejoras visuales.
     """
     try:
         posicion_inicial = configuracion_3d['distancia_toma_12']
@@ -636,7 +635,9 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
                     sensor_num = obtener_numero_sensor_desde_columna(col)
                     if sensor_num is None:
                         continue
-                    altura_sensor_real = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
+                    altura_sensor_real = sensor_num_a_altura(
+                        sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden
+                    )
                     presion = fila.get(col, None)
                     if pd.isna(presion) or presion is None:
                         continue
@@ -666,7 +667,10 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
         puntos_2d = np.vstack([puntos_x, puntos_y]).T
         tri = Delaunay(puntos_2d)
 
-        fig = go.Figure(data=[go.Mesh3d(
+        fig = go.Figure()
+
+        # Superficie
+        fig.add_trace(go.Mesh3d(
             x=puntos_x,
             y=puntos_y,
             z=puntos_z,
@@ -674,33 +678,68 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
             j=tri.simplices[:, 1],
             k=tri.simplices[:, 2],
             intensity=puntos_z,
-            colorscale='RdBu_r',
+            colorscale='Turbo',
             colorbar_title='Δ Presión [Pa]',
             name=f"Diferencia {nombre_a} - {nombre_b}",
-            showscale=True,
-            hovertemplate='<b>Diferencia</b><br>Pos X: %{x:.1f} mm<br>Altura Z: %{y:.1f} mm<br>Δ Presión: %{z:.3f} Pa<extra></extra>'
-        )])
+            lighting=dict(ambient=0.5, diffuse=0.8, specular=0.5, roughness=0.5, fresnel=0.2),
+            lightposition=dict(x=100, y=200, z=100),
+            hovertemplate='<b>Δ Presión</b>: %{intensity:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+        ))
+
+        # Wireframe
+        wire_x, wire_y, wire_z = [], [], []
+        for simplex in tri.simplices:
+            for idx_pair in [(0,1), (1,2), (2,0)]:
+                for idx in idx_pair:
+                    wire_x.append(puntos_x[simplex[idx]])
+                    wire_y.append(puntos_y[simplex[idx]])
+                    wire_z.append(puntos_z[simplex[idx]])
+                wire_x.append(None)
+                wire_y.append(None)
+                wire_z.append(None)
+
+        fig.add_trace(go.Scatter3d(
+            x=wire_x,
+            y=wire_y,
+            z=wire_z,
+            mode='lines',
+            line=dict(color='black', width=1),
+            name='Malla',
+            hoverinfo='skip'
+        ))
+
+        # Puntos medidos
+        if mostrar_puntos:
+            fig.add_trace(go.Scatter3d(
+                x=puntos_x,
+                y=puntos_y,
+                z=puntos_z,
+                mode='markers',
+                marker=dict(size=3, color='red'),
+                name='Puntos medidos',
+                hovertemplate='<b>Punto medido</b><br>Δ Presión: %{z:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+            ))
 
         fig.update_layout(
-            title=f"Resta de Superficies 3D - {nombre_a} - {nombre_b}",
+            title=f"Diferencia de Superficies 3D Mejorada - {nombre_a} - {nombre_b}",
             scene=dict(
                 xaxis_title="Posición X Traverser [mm]",
                 yaxis_title="Altura Física Z [mm]",
                 zaxis_title="Δ Presión [Pa]",
                 aspectratio=dict(x=1.5, y=2, z=1),
-                camera=dict(eye=dict(x=2, y=-2, z=1.5))
+                camera=dict(eye=dict(x=1.6, y=1.6, z=0.9))
             ),
             width=1600,
             height=900,
-            margin=dict(l=0, r=0, t=50, b=0)
+            margin=dict(l=0, r=0, b=0, t=50)
         )
 
         return fig
 
     except Exception as e:
-        st.error(f"Error creando la superficie de diferencia 3D: {str(e)}")
-        print(f"Error en crear_superficie_diferencia_delaunay_3d: {e}")
+        st.error(f"Error creando la superficie de diferencia 3D mejorada: {str(e)}")
         return None
+
 
 
 
@@ -965,20 +1004,19 @@ def mostrar_configuracion_sensores(section_key):
 
     return st.session_state.get(config_key, {})
 
-def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archivo):
+def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archivo, mostrar_puntos=True):
     """
-    Crea una superficie 3D continua a partir de todos los puntos usando Delaunay.
-    Detecta columnas 'Presion-Sensor N' dinámicamente (soporta 1..36).
+    Crea una superficie 3D continua con Delaunay y mejoras visuales.
+    Ahora permite activar/desactivar la visualización de puntos medidos.
     """
     try:
         posicion_inicial = configuracion_3d['distancia_toma_12']
         distancia_entre_tomas = configuracion_3d['distancia_entre_tomas']
         orden = configuracion_3d['orden']
-        n_tomas = 12
 
         puntos_x, puntos_y_altura, presiones_z = [], [], []
 
-        # detectar columnas de sensores
+        # Detectar columnas de sensores
         sensor_cols = [c for c in datos_completos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
 
         for _, fila in datos_completos.iterrows():
@@ -991,7 +1029,9 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
                 sensor_num = obtener_numero_sensor_desde_columna(col)
                 if sensor_num is None:
                     continue
-                altura_sensor_real = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
+                altura_sensor_real = sensor_num_a_altura(
+                    sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden
+                )
                 presion = fila.get(col, None)
                 if pd.isna(presion) or presion is None:
                     continue
@@ -1009,10 +1049,14 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
             st.error("No hay suficientes datos válidos para generar una superficie.")
             return None
 
-        puntos_2d_para_triangulacion = np.vstack([puntos_x, puntos_y_altura]).T
-        tri = Delaunay(puntos_2d_para_triangulacion)
+        # Triangulación Delaunay
+        puntos_2d = np.vstack([puntos_x, puntos_y_altura]).T
+        tri = Delaunay(puntos_2d)
 
-        fig = go.Figure(data=[go.Mesh3d(
+        fig = go.Figure()
+
+        # Superficie principal
+        fig.add_trace(go.Mesh3d(
             x=puntos_x,
             y=puntos_y_altura,
             z=presiones_z,
@@ -1020,27 +1064,69 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
             j=tri.simplices[:, 1],
             k=tri.simplices[:, 2],
             intensity=presiones_z,
-            colorscale='Viridis',
+            colorscale='Turbo',
             colorbar_title='Presión [Pa]',
-            name='Presión'
-        )])
+            name='Superficie de presión',
+            lighting=dict(ambient=0.5, diffuse=0.8, specular=0.5, roughness=0.5, fresnel=0.2),
+            lightposition=dict(x=100, y=200, z=100),
+            hovertemplate='<b>Presión</b>: %{intensity:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+        ))
+
+        # Wireframe
+        wire_x, wire_y, wire_z = [], [], []
+        for simplex in tri.simplices:
+            for idx_pair in [(0,1), (1,2), (2,0)]:
+                for idx in idx_pair:
+                    wire_x.append(puntos_x[simplex[idx]])
+                    wire_y.append(puntos_y_altura[simplex[idx]])
+                    wire_z.append(presiones_z[simplex[idx]])
+                wire_x.append(None)
+                wire_y.append(None)
+                wire_z.append(None)
+
+        fig.add_trace(go.Scatter3d(
+            x=wire_x,
+            y=wire_y,
+            z=wire_z,
+            mode='lines',
+            line=dict(color='black', width=1),
+            name='Malla',
+            hoverinfo='skip'
+        ))
+
+        # Puntos medidos (si mostrar_puntos=True)
+        if mostrar_puntos:
+            fig.add_trace(go.Scatter3d(
+                x=puntos_x,
+                y=puntos_y_altura,
+                z=presiones_z,
+                mode='markers',
+                marker=dict(size=3, color='red'),
+                name='Puntos medidos',
+                hovertemplate='<b>Punto medido</b><br>Presión: %{z:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+            ))
 
         fig.update_layout(
-            title=f"Superficie de Presión Detallada (Puntos) - {nombre_archivo}",
+            title=f"Superficie de Presión 3D Mejorada - {nombre_archivo}",
             scene=dict(
                 xaxis_title="Posición X Traverser [mm]",
                 yaxis_title="Altura Física Real del Sensor [mm]",
                 zaxis_title="Presión [Pa]",
-                aspectratio=dict(x=1, y=2, z=0.8)
+                aspectratio=dict(x=1, y=2, z=0.8),
+                camera=dict(eye=dict(x=1.6, y=1.6, z=0.9))
             ),
-            margin=dict(l=0, r=0, b=0, t=40)
+            width=1600,
+            height=900,
+            margin=dict(l=0, r=0, b=0, t=50)
         )
-        fig.update_layout(width=1600, height=900, margin=dict(l=0, r=0, t=50, b=0))
+
         return fig
 
     except Exception as e:
-        st.error(f"Error creando la superficie de malla 3D: {str(e)}")
+        st.error(f"Error creando la superficie de malla 3D mejorada: {str(e)}")
         return None
+
+
 
     
 def crear_sub_archivos_3d_por_tiempo_y_posicion(df_datos, nombre_archivo):
@@ -1922,6 +2008,9 @@ elif st.session_state.seccion_actual == 'betz_3d':
         st.markdown("## 🌪️ Paso 3: Visualización Individual de Archivos 3D")
         st.markdown("Selecciona un archivo para ver su superficie 3D individual")
         
+        # 🔘 Checkbox para activar/desactivar puntos medidos
+        mostrar_puntos_3d = st.checkbox("Mostrar puntos medidos en la superficie", value=True, key="mostrar_puntos_3d")
+
         if st.session_state.archivos_3d_cargados:
             # Crear interfaz de selección tipo browser
             st.markdown("### 📁 Archivos 3D Disponibles")
@@ -1974,7 +2063,8 @@ elif st.session_state.seccion_actual == 'betz_3d':
                                     fig_individual = crear_superficie_delaunay_3d(
                                         datos_archivo,
                                         st.session_state.configuracion_3d,
-                                        nombre_archivo
+                                        nombre_archivo,
+                                        mostrar_puntos=mostrar_puntos_3d  # ← Aquí
                                     )
                                     
                                     if fig_individual:
@@ -2017,6 +2107,8 @@ elif st.session_state.seccion_actual == 'betz_3d':
                     key="diff_3d_b"
                 )
             
+            # 🔘 Checkbox para activar/desactivar puntos en diferencia
+            mostrar_puntos_diff = st.checkbox("Mostrar puntos medidos en la diferencia", value=True, key="mostrar_puntos_diff")
             # --- INICIO DE LA ESTRUCTURA CORREGIDA ---
 
             # PARTE 1: El botón "Calcular" solo genera el gráfico y lo guarda en una "bandeja" temporal.
@@ -2029,12 +2121,13 @@ elif st.session_state.seccion_actual == 'betz_3d':
                         datos_b = st.session_state.archivos_3d_cargados[archivo_b]
                         
                         fig_diferencia_3d = crear_superficie_diferencia_delaunay_3d(
-                                            datos_a,
-                                            datos_b,
-                                            archivo_a,
-                                            archivo_b,
-                                            st.session_state.configuracion_3d
-                                        )
+                            datos_a,
+                            datos_b,
+                            archivo_a,
+                            archivo_b,
+                            st.session_state.configuracion_3d,
+                            mostrar_puntos=mostrar_puntos_diff  # ← Aquí
+                        )
 
                         if fig_diferencia_3d:
                             # Guardamos la figura y su nombre en la sesión para que sobrevivan al reinicio de la página.
