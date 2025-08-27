@@ -1879,7 +1879,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_toma_12 = st.number_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
-            value=-200,
+            value=-200.0,
             step=1.0,
             format="%.1f",
             help="Distancia en mm desde el punto de referencia del traverser",
@@ -1888,7 +1888,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=15,
+            value=15.0,
             step=0.01,
             format="%.2f",
             help="Distancia física entre tomas consecutivas según el plano técnico",
