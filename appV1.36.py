@@ -292,18 +292,17 @@ def obtener_numero_sensor_desde_columna(col_name):
     return None
 
 
-def sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden="asc"):
-    """Dado sensor_num global (1..36), calcula la altura física real (z_total).
-       Se asume que hay 12 tomas por columna; se mapea sensor_num -> toma_index (1..12).
-    """
+def sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, n_sensores, orden="asc"):
     if sensor_num is None:
         return None
-    # índice dentro de la docena (1..12)
-    toma_index = ((int(sensor_num) - 1) % 12) + 1
+    
+    toma_index = int(sensor_num)  # ahora global: 1..21
+
     if orden == "asc":
         z_total = y_traverser + posicion_inicial + (toma_index - 1) * distancia_entre_tomas
-    else:  # 'des'
-        z_total = y_traverser + posicion_inicial + (12 - toma_index) * distancia_entre_tomas
+    else:
+        z_total = y_traverser + posicion_inicial + (n_sensores - toma_index) * distancia_entre_tomas
+
     return z_total
 
 def extraer_nombre_base_archivo(nombre_archivo):
@@ -313,7 +312,7 @@ def extraer_nombre_base_archivo(nombre_archivo):
     return ' '.join(word.capitalize() for word in nombre_base.split())
 
 def procesar_promedios(archivo_csv, orden="asc"):
-    """Procesar archivo de incertidumbre adaptado a nuevos formatos de cabeceras de sensores."""
+    """Procesar archivo de incertidumbre y detectar automáticamente la cantidad de sensores."""
     try:
         df_raw = pd.read_csv(archivo_csv, sep=";", header=None, dtype=str)  # leer como texto para robustez
 
@@ -359,7 +358,7 @@ def procesar_promedios(archivo_csv, orden="asc"):
                 else:
                     valores_lista.append(s)
 
-            # Si por alguna razón no se alinean en longitud, intentar alinear truncando o rellenando con None
+            # Si por alguna razón no se alinean en longitud, ajustar
             n = max(len(sensores_lista), len(valores_lista))
             sensores_lista = (sensores_lista + [None] * n)[:n]
             valores_lista = (valores_lista + [None] * n)[:n]
@@ -400,11 +399,22 @@ def procesar_promedios(archivo_csv, orden="asc"):
             df_resultado["X_coord"] = None
             df_resultado["Y_coord"] = None
 
+        # 🔎 Detectar cantidad de sensores automáticamente
+        sensores_cols = [c for c in df_resultado.columns if re.search(r'Presion[-_ ]*Sensor', str(c), re.IGNORECASE)]
+        if sensores_cols:
+            n_sensores = max([obtener_numero_sensor_desde_columna(c) for c in sensores_cols if obtener_numero_sensor_desde_columna(c) is not None])
+        else:
+            n_sensores = 0
+
+        # Guardar en atributos del DataFrame para usar después
+        df_resultado.attrs["n_sensores"] = n_sensores
+
         return df_resultado
 
     except Exception as e:
         st.error(f"Error al procesar archivo: {str(e)}")
         return None
+
 
 
 def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archivo_fuente):
@@ -437,26 +447,19 @@ def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archi
 
     return sub_archivos
 
-def calcular_posiciones_sensores(distancia_toma_12, distancia_entre_tomas, orden="asc"):
-    """Calcular posiciones geométricas de los sensores según el orden especificado.
-       Ahora genera posiciones para sensores 1..36 (soporte docenas).
-    """
+def calcular_posiciones_sensores(distancia_toma_12, distancia_entre_tomas, n_sensores, orden="asc"):
     posiciones = {}
-
-    for sensor_num in range(1, 37):  # 1..36
-        # índice dentro de la docena (1..12)
-        toma_index = ((sensor_num - 1) % 12) + 1
+    for sensor_num in range(1, n_sensores+1):
         if orden == "asc":
-            y_position = distancia_toma_12 + (toma_index - 1) * distancia_entre_tomas
-        else:  # 'des'
-            y_position = distancia_toma_12 + (12 - toma_index) * distancia_entre_tomas
+            y_position = distancia_toma_12 + (sensor_num - 1) * distancia_entre_tomas
+        else:
+            y_position = distancia_toma_12 + (n_sensores - sensor_num) * distancia_entre_tomas
 
         posiciones[f"Presion-Sensor {sensor_num}"] = {
             'x': 0,
             'y': y_position,
             'sensor_fisico': sensor_num
         }
-
     return posiciones
 
 def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensores, configuracion):
@@ -1876,7 +1879,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_toma_12 = st.number_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
-            value=-120.0,
+            value=-200,
             step=1.0,
             format="%.1f",
             help="Distancia en mm desde el punto de referencia del traverser",
@@ -1885,7 +1888,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=10.91,
+            value=15,
             step=0.01,
             format="%.2f",
             help="Distancia física entre tomas consecutivas según el plano técnico",
@@ -2274,4 +2277,6 @@ st.markdown(f"""
     <p><small>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small></p>
 </div>
 """, unsafe_allow_html=True)
+
+
 
