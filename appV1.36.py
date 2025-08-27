@@ -15,10 +15,15 @@ import os
 import zipfile
 import random
 import locale
+import os
+
+# Intentar configurar el locale en_US (para usar punto como separador decimal)
 try:
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 except locale.Error:
-    pass
+    # Si no está instalado en el contenedor, usar configuración por defecto
+    os.environ["LC_ALL"] = "en_US.UTF-8"
+    os.environ["LANG"] = "en_US.UTF-8"
 
 # Configuración de la página
 st.set_page_config(
