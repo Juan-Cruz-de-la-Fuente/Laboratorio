@@ -14,7 +14,11 @@ from typing import Dict
 import os
 import zipfile
 import random
-
+import locale
+try:
+    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+except locale.Error:
+    pass
 
 # Configuración de la página
 st.set_page_config(
@@ -1882,6 +1886,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
             value=-200.0,
             step=0.1,
+            format="%.4f",
             help="Distancia en mm desde el punto de referencia del traverser",
             key="dist_toma_3d"
         )
@@ -1890,6 +1895,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
             "Distancia entre tomas [mm]:",
             value=15.0,
             step=0.01,
+            format="%.4f",
             help="Distancia física entre tomas consecutivas según el plano técnico",
             key="dist_entre_3d"
         )
