@@ -1901,7 +1901,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         # Usamos claves separadas para el string que edita el usuario
         distancia_toma_12_str = st.text_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 del traverser [mm]:",
-            value=str(st.session_state.get(f'dist_toma_{section_key}', -120.0)).replace('.', ','),
+            value=str(st.session_state.get(f'dist_toma_{'dist_toma_3D'}', -120.0)).replace('.', ','),
             help="Distancia en mm desde el punto de referencia del traverser.",
             key=f'dist_toma_{section_key}_str'
         )
@@ -1909,7 +1909,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_entre_tomas_str = st.text_input(
             "Distancia entre tomas [mm]:",
-            value=str(st.session_state.get(f'dist_entre_{section_key}', 10.91)).replace('.', ','),
+            value=str(st.session_state.get(f'dist_entre_{'dist_entre_3d'}', 10.91)).replace('.', ','),
             help="Distancia física entre tomas consecutivas según el plano técnico.",
             key=f'dist_entre_{section_key}_str'
         )
