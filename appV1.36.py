@@ -24,7 +24,18 @@ except locale.Error:
     # Si no está instalado en el contenedor, usar configuración por defecto
     os.environ["LC_ALL"] = "en_US.UTF-8"
     os.environ["LANG"] = "en_US.UTF-8"
-
+# --- Locale-safe parsing helpers ---
+def _parse_float_locale(s, fallback=None):
+    if s is None:
+        return fallback
+    s = str(s).strip().replace(' ', '')
+    # Aceptar coma o punto como separador decimal
+    s = s.replace(',', '.')
+    try:
+        return float(s)
+    except ValueError:
+        return fallback
+        
 # Configuración de la página
 st.set_page_config(
     page_title="Laboratorio de Aerodinámica y Fluidos - UTN HAEDO",
@@ -1354,21 +1365,21 @@ elif st.session_state.seccion_actual == 'betz_2d':
             help="Seleccione el sensor que corresponde a la toma física número 12"
         )
 
-        distancia_toma_12 = st.number_input(
+        distancia_toma_12_str = st.text_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
-            value=-120.0,
-            step=1.0,
-            format="%.1f",
-            help="Distancia en mm desde el punto de referencia del traverser"
+            value=str(st.session_state.get('distancia_toma_12', -120.0)).replace('.', ','),
+            help="Distancia en mm desde el punto de referencia del traverser",
+            key="dist_toma_betz2d_str"
         )
-
-        distancia_entre_tomas = st.number_input(
+        distancia_toma_12 = _parse_float_locale(distancia_toma_12_str, fallback=-120.0)
+        
+        distancia_entre_tomas_str = st.text_input(
             "Distancia entre tomas [mm]:",
-            value=10.91,
-            step=0.01,
-            format="%.2f",
-            help="Distancia física entre tomas consecutivas según el plano técnico"
+            value=str(st.session_state.get('distancia_entre_tomas', 10.91)).replace('.', ','),
+            help="Distancia física entre tomas consecutivas según el plano técnico",
+            key="dist_entre_betz2d_str"
         )
+        distancia_entre_tomas = _parse_float_locale(distancia_entre_tomas_str, fallback=10.91)
 
         if st.button("💾 Guardar Configuración", type="primary"):
             st.session_state.configuracion_inicial = {
@@ -1887,23 +1898,22 @@ elif st.session_state.seccion_actual == 'betz_3d':
             key="sensor_ref_3d"
         )
         
-        distancia_toma_12 = st.number_input(
-            "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
-            value=-200.0,
-            step=0.1,
-            format="%.4f",
-            help="Distancia en mm desde el punto de referencia del traverser",
-            key="dist_toma_3d"
+        # Usamos claves separadas para el string que edita el usuario
+        distancia_toma_12_str = st.text_input(
+            "Distancia de la toma 12 a la posición X=0, Y=0 del traverser [mm]:",
+            value=str(st.session_state.get(f'dist_toma_{section_key}', -120.0)).replace('.', ','),
+            help="Distancia en mm desde el punto de referencia del traverser.",
+            key=f'dist_toma_{section_key}_str'
         )
+        distancia_toma_12 = _parse_float_locale(distancia_toma_12_str, fallback=-120.0)
         
-        distancia_entre_tomas = st.number_input(
+        distancia_entre_tomas_str = st.text_input(
             "Distancia entre tomas [mm]:",
-            value=15.0,
-            step=0.01,
-            format="%.4f",
-            help="Distancia física entre tomas consecutivas según el plano técnico",
-            key="dist_entre_3d"
+            value=str(st.session_state.get(f'dist_entre_{section_key}', 10.91)).replace('.', ','),
+            help="Distancia física entre tomas consecutivas según el plano técnico.",
+            key=f'dist_entre_{section_key}_str'
         )
+        distancia_entre_tomas = _parse_float_locale(distancia_entre_tomas_str, fallback=10.91)
         
         # Guardar configuración
         if st.button("💾 Guardar Configuración 3D", type="primary", key="save_3d"):
