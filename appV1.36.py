@@ -14,28 +14,7 @@ from typing import Dict
 import os
 import zipfile
 import random
-import locale
-import os
 
-# Intentar configurar el locale en_US (para usar punto como separador decimal)
-try:
-    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-except locale.Error:
-    # Si no está instalado en el contenedor, usar configuración por defecto
-    os.environ["LC_ALL"] = "en_US.UTF-8"
-    os.environ["LANG"] = "en_US.UTF-8"
-# --- Locale-safe parsing helpers ---
-def _parse_float_locale(s, fallback=None):
-    if s is None:
-        return fallback
-    s = str(s).strip().replace(' ', '')
-    # Aceptar coma o punto como separador decimal
-    s = s.replace(',', '.')
-    try:
-        return float(s)
-    except ValueError:
-        return fallback
-        
 # Configuración de la página
 st.set_page_config(
     page_title="Laboratorio de Aerodinámica y Fluidos - UTN HAEDO",
@@ -320,9 +299,10 @@ def sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_ent
     toma_index = int(sensor_num)  # ahora global: 1..21
 
     if orden == "asc":
-        z_total = y_traverser + posicion_inicial + (toma_index - 1) * distancia_entre_tomas
+        z_total = y_traverser + (toma_index - 1) * distancia_entre_tomas
     else:
-        z_total = y_traverser + posicion_inicial + (n_sensores - toma_index) * distancia_entre_tomas
+        z_total = y_traverser + (n_sensores - toma_index) * distancia_entre_tomas
+
 
     return z_total
 
@@ -469,12 +449,21 @@ def crear_archivos_individuales_por_tiempo_y_posicion(df_resultado, nombre_archi
     return sub_archivos
 
 def calcular_posiciones_sensores(distancia_toma_12, distancia_entre_tomas, n_sensores, orden="asc"):
+    """
+    Calcula las posiciones físicas de todos los sensores en función de:
+    - distancia_toma_12: posición de la toma física número 12 (en mm)
+    - distancia_entre_tomas: separación entre sensores consecutivos (en mm)
+    - n_sensores: cantidad total de sensores detectados en el archivo
+    - orden: "asc" o "des" (según cómo están montados los sensores)
+    Devuelve un diccionario con la posición y número físico de cada sensor.
+    """
     posiciones = {}
-    for sensor_num in range(1, n_sensores+1):
+    for sensor_num in range(1, n_sensores + 1):
         if orden == "asc":
-            y_position = distancia_toma_12 + (sensor_num - 1) * distancia_entre_tomas
+            y_position = (sensor_num - 1) * distancia_entre_tomas
         else:
-            y_position = distancia_toma_12 + (n_sensores - sensor_num) * distancia_entre_tomas
+            y_position = (n_sensores - sensor_num) * distancia_entre_tomas
+
 
         posiciones[f"Presion-Sensor {sensor_num}"] = {
             'x': 0,
@@ -483,24 +472,19 @@ def calcular_posiciones_sensores(distancia_toma_12, distancia_entre_tomas, n_sen
         }
     return posiciones
 
+
 def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensores, configuracion):
-    """
-    Crea un gráfico BETZ concatenado con relleno de área, ejes negros y leyenda.
-    Ahora detecta dinámicamente las columnas 'Presion-Sensor N' (1..36).
-    """
     fig = go.Figure()
 
     posicion_inicial = configuracion['distancia_toma_12']
     distancia_entre_tomas = configuracion['distancia_entre_tomas']
-    n_tomas = 12
+    orden = configuracion.get('orden', 'asc')
     colores_por_tiempo = {10: '#08596C', 20: '#E74C3C', 30: '#F39C12', 40: '#27AE60', 50: '#8E44AD', 60: '#3498DB'}
 
     datos_agrupados = {}
     for clave, sub_archivo in sub_archivos_seleccionados.items():
         grupo = (sub_archivo['archivo_fuente'], sub_archivo['tiempo'])
-        if grupo not in datos_agrupados:
-            datos_agrupados[grupo] = []
-        datos_agrupados[grupo].append(sub_archivo)
+        datos_agrupados.setdefault(grupo, []).append(sub_archivo)
 
     for grupo, sub_archivos_del_grupo in datos_agrupados.items():
         archivo_fuente, tiempo = grupo
@@ -510,7 +494,6 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
 
         for sub_archivo in sub_archivos_del_grupo:
             datos_tiempo = sub_archivo['datos']
-            # detectar columnas de sensores
             sensor_cols = [c for c in datos_tiempo.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
 
             for _, fila in datos_tiempo.iterrows():
@@ -520,108 +503,57 @@ def crear_grafico_betz_concatenado(sub_archivos_seleccionados, posiciones_sensor
                     sensor_num = obtener_numero_sensor_desde_columna(col)
                     if sensor_num is None:
                         continue
-                    z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, configuracion.get('orden', 'asc'))
+                    z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, configuracion.get('n_sensores', len(sensor_cols)), orden)
                     presion = fila.get(col, None)
-                    if pd.isna(presion) or presion is None:
+                    if pd.isna(presion):
                         continue
                     try:
-                        if isinstance(presion, str):
-                            presion = float(presion.replace(',', '.'))
-                        else:
-                            presion = float(presion)
+                        presion = float(str(presion).replace(',', '.'))
                         presion_grupo.append(presion)
                         z_grupo.append(z_total)
-                    except (ValueError, TypeError):
+                    except ValueError:
                         continue
-
-        if z_grupo and presion_grupo:
-            datos_ordenados = sorted(zip(z_grupo, presion_grupo))
-            z_ordenado, presion_ordenada = zip(*datos_ordenados)
-
-            nombre_leyenda = f"{archivo_fuente} - T{tiempo}s"
-
-            fig.add_trace(go.Scatter(
-                x=presion_ordenada,
-                y=z_ordenado,
-                mode='lines',
-                name=nombre_leyenda,
-                line=dict(color=color, width=2),
-                fill='tozerox',
-                opacity=0.7,
-                hovertemplate=f'<b>{nombre_leyenda}</b><br>Presión: %{{x:.3f}} Pa<br>Altura: %{{y:.1f}} mm<extra></extra>'
-            ))
-
-    # (mantener layout como en tu versión original)
-    fig.update_layout(
-        title=dict(text="Perfil de Presión Concatenado", font=dict(color='black')),
-        xaxis_title="Presión Total [Pa]",
-        yaxis_title="Altura Z [mm]",
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        height=700,
-        showlegend=True,
-        font=dict(color="black"),
-        legend=dict(
-            title_font=dict(color="black"),
-            bgcolor='rgba(255, 255, 255, 0.8)',
-            bordercolor='black',
-            borderwidth=1
-        ),
-        xaxis=dict(showgrid=True, gridcolor="#e5e7eb", zeroline=True, zerolinecolor='black'),
-        yaxis=dict(showgrid=True, gridcolor="#e5e7eb", zeroline=True, zerolinecolor='black')
-    )
-    fig.update_layout(
-        width=1600,
-        height=900,
-        margin=dict(l=0, r=0, t=50, b=0)
-    )
-    return fig
 
 
 def extraer_datos_para_grafico(sub_archivo, configuracion):
     """Extraer datos de presión y altura de un sub-archivo para gráficos (múltiples posiciones).
-       Ahora soporta sensores numerados 1..36 y mapea la altura según el número de sensor.
+       Ahora soporta sensores numerados dinámicamente.
     """
     datos_tiempo = sub_archivo['datos']
     distancia_entre_tomas = configuracion['distancia_entre_tomas']
     posicion_inicial = configuracion.get('distancia_toma_12', 0)
     orden = configuracion.get('orden', 'asc')
 
-    z_datos = []
-    presion_datos = []
+    z_datos, presion_datos = [], []
 
-    # Definir columnas de sensores detectadas en el DataFrame
-    posibles_cols = [c for c in datos_tiempo.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
-    # Iterar cada fila (posiciones Y posibles)
+    sensor_cols = [c for c in datos_tiempo.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+    n_sensores = max([obtener_numero_sensor_desde_columna(c) for c in sensor_cols], default=0)
+
     for _, fila in datos_tiempo.iterrows():
         y_traverser = fila.get('Y_coord', 0) if pd.notna(fila.get('Y_coord', np.nan)) else 0
 
-        # Para cada columna detectada, calcular su altura real y tomar el valor
-        for col in posibles_cols:
+        for col in sensor_cols:
             sensor_num = obtener_numero_sensor_desde_columna(col)
             if sensor_num is None:
                 continue
-            z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden)
-
-            # Leer presión y convertir
+            z_total = sensor_num_a_altura(sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, n_sensores, orden)
             presion = fila.get(col, None)
-            if pd.isna(presion) or presion is None:
+            if pd.isna(presion):
                 continue
             try:
-                if isinstance(presion, str):
-                    presion = presion.replace(',', '.').strip()
-                presion_val = float(presion)
+                presion_val = float(str(presion).replace(',', '.'))
                 z_datos.append(z_total)
                 presion_datos.append(presion_val)
             except (ValueError, TypeError):
                 continue
 
-    # Ordenar por altura
+    # Ordenar y devolver
     if z_datos and presion_datos:
         datos_ordenados = sorted(zip(z_datos, presion_datos))
         z_ordenado, presion_ordenada = zip(*datos_ordenados)
         return list(z_ordenado), list(presion_ordenada)
 
+    # 🔑 SIEMPRE devolver dos listas
     return [], []
 
 
@@ -1360,26 +1292,26 @@ elif st.session_state.seccion_actual == 'betz_2d':
         st.info("🔍 **Pregunta:** ¿Qué sensor corresponde a la toma número 12 (la que se encuentra cerca del piso)?")
         sensor_referencia = st.selectbox(
             "Sensor de referencia (toma 12):",
-            [f"Sensor {i}" for i in range(1, 13)],
+            [f"Sensor {i}" for i in range(1, 37)],  # ahora permite hasta 36
             index=11,
             help="Seleccione el sensor que corresponde a la toma física número 12"
         )
 
-        distancia_toma_12_str = st.text_input(
+        distancia_toma_12 = st.number_input(
             "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
-            value=str(st.session_state.get('distancia_toma_12', -120.0)).replace('.', ','),
-            help="Distancia en mm desde el punto de referencia del traverser",
-            key="dist_toma_betz2d_str"
+            value=-120.0,
+            step=1.0,
+            format="%.1f",
+            help="Distancia en mm desde el punto de referencia del traverser"
         )
-        distancia_toma_12 = _parse_float_locale(distancia_toma_12_str, fallback=-120.0)
-        
-        distancia_entre_tomas_str = st.text_input(
+
+        distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=str(st.session_state.get('distancia_entre_tomas', 10.91)).replace('.', ','),
-            help="Distancia física entre tomas consecutivas según el plano técnico",
-            key="dist_entre_betz2d_str"
+            value=10.91,
+            step=0.01,
+            format="%.2f",
+            help="Distancia física entre tomas consecutivas según el plano técnico"
         )
-        distancia_entre_tomas = _parse_float_locale(distancia_entre_tomas_str, fallback=10.91)
 
         if st.button("💾 Guardar Configuración", type="primary"):
             st.session_state.configuracion_inicial = {
@@ -1592,24 +1524,32 @@ elif st.session_state.seccion_actual == 'betz_2d':
         # Paso 4: Sección de Gráficos
         st.markdown("## 📈 Paso 4: Sección de Gráficos")
 
-        # Calcular posiciones de sensores
-        posiciones_sensores = calcular_posiciones_sensores(
-            st.session_state.configuracion_inicial['distancia_toma_12'],
-            st.session_state.configuracion_inicial['distancia_entre_tomas'],
-            st.session_state.configuracion_inicial['orden']
-        )
+        if st.session_state.datos_procesados:
+            # Tomar el primer DataFrame procesado para obtener n_sensores
+            primer_df = next(iter(st.session_state.datos_procesados.values()))
+            n_sensores_detectados = primer_df.attrs.get("n_sensores", 12)
 
-        # Mostrar tabla de posiciones calculadas
-        with st.expander("Ver posiciones calculadas de sensores"):
-            pos_df = pd.DataFrame([
-                {
-                    'Sensor': sensor,
-                    'Posición Y [mm]': pos['y'],
-                    'Sensor Físico': pos['sensor_fisico']
-                }
-                for sensor, pos in posiciones_sensores.items()
-            ])
-            st.dataframe(pos_df, use_container_width=True)
+            posiciones_sensores = calcular_posiciones_sensores(
+                st.session_state.configuracion_inicial['distancia_toma_12'],
+                st.session_state.configuracion_inicial['distancia_entre_tomas'],
+                n_sensores_detectados,
+                st.session_state.configuracion_inicial['orden']
+            )
+
+            # Mostrar tabla de posiciones
+            with st.expander("Ver posiciones calculadas de sensores"):
+                pos_df = pd.DataFrame([
+                    {
+                        'Sensor': sensor,
+                        'Posición Y [mm]': pos['y'],
+                        'Sensor Físico': pos['sensor_fisico']
+                    }
+                    for sensor, pos in posiciones_sensores.items()
+                ])
+                st.dataframe(pos_df, use_container_width=True)
+        else:
+            st.warning("⚠️ No hay datos procesados aún. Suba archivos en el Paso 2.")
+
 
         # Contenedor para los filtros de visualización
         with st.container(border=True):
@@ -1898,22 +1838,23 @@ elif st.session_state.seccion_actual == 'betz_3d':
             key="sensor_ref_3d"
         )
         
-        # Usamos claves separadas para el string que edita el usuario
-        distancia_toma_12_str = st.text_input(
-            "Distancia de la toma 12 a la posición X=0, Y=0 del traverser [mm]:",
-            value=str(st.session_state.get(f'dist_toma_{'dist_toma_3D'}', -120.0)).replace('.', ','),
-            help="Distancia en mm desde el punto de referencia del traverser.",
-            key=f'dist_toma_{'dist_toma_3D'}_str'
+        distancia_toma_12 = st.number_input(
+            "Distancia de la toma 12 a la posición X=0, Y=0 (coordenadas del traverser) [mm]:",
+            value=-120.0,
+            step=1.0,
+            format="%.1f",
+            help="Distancia en mm desde el punto de referencia del traverser",
+            key="dist_toma_3d"
         )
-        distancia_toma_12 = _parse_float_locale(distancia_toma_12_str, fallback=-120.0)
         
-        distancia_entre_tomas_str = st.text_input(
+        distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=str(st.session_state.get(f'dist_entre_{'dist_entre_3d'}', 10.91)).replace('.', ','),
-            help="Distancia física entre tomas consecutivas según el plano técnico.",
-            key=f'dist_entre_{'dist_entre_3d'}_str'
+            value=10.91,
+            step=0.01,
+            format="%.2f",
+            help="Distancia física entre tomas consecutivas según el plano técnico",
+            key="dist_entre_3d"
         )
-        distancia_entre_tomas = _parse_float_locale(distancia_entre_tomas_str, fallback=10.91)
         
         # Guardar configuración
         if st.button("💾 Guardar Configuración 3D", type="primary", key="save_3d"):
