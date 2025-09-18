@@ -1134,91 +1134,214 @@ def unir_archivos_incertidumbre(archivos_lista, nombre_salida):
         st.error(f"Error al unir archivos: {str(e)}")
         return None, []
 
-def extraer_matriz_presiones(archivo_incertidumbre):
-    """Extrae matriz de presiones donde filas=Y, columnas=Z, valores=presión"""
+def extraer_matriz_presiones_completa(archivo_incertidumbre, configuracion):
+    """
+    Extrae todos los puntos de presión con coordenadas físicas Y–Z.
+    Devuelve una lista de tuplas (Y, Z, presion).
+    """
     try:
-        # Procesar archivo de incertidumbre
-        datos = procesar_promedios(archivo_incertidumbre, "asc")
+        # Procesar archivo CSV de incertidumbre
+        datos = procesar_promedios(archivo_incertidumbre, configuracion["orden"])
         if datos is None:
-            return None
-        
-        # Crear matriz de presiones
-        coordenadas_y = sorted(datos['X_coord'].dropna().unique())  # X_coord del archivo = Y nuestra
-        coordenadas_z = sorted(datos['Y_coord'].dropna().unique())  # Y_coord del archivo = Z nuestra
-        
-        # Crear matriz vacía
-        matriz = pd.DataFrame(index=coordenadas_y, columns=coordenadas_z)
-        matriz = matriz.fillna(0.0)
-        
-        # Llenar matriz con valores de presión promedio
+            return []
+
+        puntos = []
+        sensor_cols = [c for c in datos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+
         for _, fila in datos.iterrows():
-            y_coord = fila.get('X_coord')  # X_coord del archivo = Y nuestra
-            z_coord = fila.get('Y_coord')  # Y_coord del archivo = Z nuestra
-            
-            if pd.notna(y_coord) and pd.notna(z_coord):
-                # Obtener columnas de sensores y promediar
-                sensor_cols = [c for c in datos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
-                presiones = []
-                
-                for col in sensor_cols:
-                    valor = fila.get(col)
-                    if pd.notna(valor):
-                        try:
-                            if isinstance(valor, str):
-                                valor = float(valor.replace(',', '.'))
-                            presiones.append(float(valor))
-                        except:
-                            continue
-                
-                if presiones:
-                    matriz.loc[y_coord, z_coord] = np.mean(presiones)
-        
-        return matriz
-        
+            y_trav = fila.get("X_coord")   # coordenada Y del traverser
+            z_trav = fila.get("Y_coord")   # coordenada base Z
+            if pd.isna(y_trav) or pd.isna(z_trav):
+                continue
+
+            for col in sensor_cols:
+                num = obtener_numero_sensor_desde_columna(col)
+                if num is None:
+                    continue
+
+                # calcular altura física real del sensor
+                z_real = sensor_num_a_altura(
+                    num,
+                    z_trav,
+                    configuracion["distancia_toma_12"],
+                    configuracion["distancia_entre_tomas"],
+                    len(sensor_cols),
+                    configuracion["orden"]
+                )
+
+                presion = fila.get(col, None)
+                if presion is None or pd.isna(presion):
+                    continue
+
+                try:
+                    presion_val = float(str(presion).replace(",", "."))
+                    puntos.append((float(y_trav), float(z_real), presion_val))
+                except ValueError:
+                    continue
+
+        return puntos
+
     except Exception as e:
-        st.error(f"Error al extraer matriz de presiones: {str(e)}")
-        return None
+        st.error(f"Error al extraer puntos de presiones: {str(e)}")
+        return []
 
-def crear_archivo_vtk(matriz_presiones, nombre_archivo):
-    """Crea archivo VTK para visualización en ParaView"""
+def crear_archivo_vtk_superficie_delaunay(df_matriz, nombre_archivo_vtk):
+    """
+    Genera un archivo VTK con superficie triangulada (Delaunay) a partir de una matriz de presiones.
+    La matriz debe tener columnas: Y, Z, Presion.
+    """
     try:
-        if matriz_presiones is None:
-            return None
-        
-        # Obtener dimensiones
-        ny = len(matriz_presiones.index)
-        nz = len(matriz_presiones.columns)
-        
-        # Crear contenido VTK
-        vtk_content = f"""# vtk DataFile Version 3.0
-Datos de Presion Aerodinamica
-ASCII
-DATASET STRUCTURED_GRID
-DIMENSIONS {nz} {ny} 1
+        # Extraer puntos y presiones
+        puntos_y = df_matriz["Y"].astype(float).tolist()
+        puntos_z = df_matriz["Z"].astype(float).tolist()
+        presiones = df_matriz["Presion"].astype(float).tolist()
 
-POINTS {ny * nz} float
-"""
-        
-        # Agregar puntos
-        for i, y in enumerate(matriz_presiones.index):
-            for j, z in enumerate(matriz_presiones.columns):
-                vtk_content += f"{float(y)} {float(z)} 0.0\n"
-        
-        # Agregar datos de presión
-        vtk_content += f"\nPOINT_DATA {ny * nz}\n"
+        if len(puntos_y) < 4:
+            if 'st' in globals():
+                st.error("No hay suficientes puntos válidos para generar una superficie triangulada.")
+            return None
+
+        # Triangulación en el plano (Y,Z)
+        puntos_2d = np.vstack([puntos_y, puntos_z]).T
+        tri = Delaunay(puntos_2d)
+
+        n_points = len(puntos_y)
+        n_triangles = len(tri.simplices)
+
+        vtk_content = "# vtk DataFile Version 3.0\n"
+        vtk_content += "Superficie Delaunay - Matriz de Presion\n"
+        vtk_content += "ASCII\n"
+        vtk_content += "DATASET UNSTRUCTURED_GRID\n"
+        vtk_content += f"POINTS {n_points} float\n"
+
+        # Usamos presión como altura (Z en el espacio 3D)
+        for i in range(n_points):
+            vtk_content += f"{puntos_y[i]:.6f} {puntos_z[i]:.6f} {presiones[i]:.6f}\n"
+
+        # Definir celdas triangulares
+        vtk_content += f"\nCELLS {n_triangles} {4*n_triangles}\n"
+        for simplex in tri.simplices:
+            vtk_content += f"3 {simplex[0]} {simplex[1]} {simplex[2]}\n"
+
+        vtk_content += f"\nCELL_TYPES {n_triangles}\n"
+        for _ in range(n_triangles):
+            vtk_content += "5\n"
+
+        # Asociar los datos escalares
+        vtk_content += f"\nPOINT_DATA {n_points}\n"
         vtk_content += "SCALARS Presion float 1\n"
         vtk_content += "LOOKUP_TABLE default\n"
-        
-        for i, y in enumerate(matriz_presiones.index):
-            for j, z in enumerate(matriz_presiones.columns):
-                presion = matriz_presiones.loc[y, z]
-                vtk_content += f"{float(presion)}\n"
-        
-        return vtk_content
-        
+        for p in presiones:
+            vtk_content += f"{p:.6f}\n"
+
+        vtk_content += "\nSCALARS Coord_Y float 1\n"
+        vtk_content += "LOOKUP_TABLE default\n"
+        for y in puntos_y:
+            vtk_content += f"{y:.6f}\n"
+
+        vtk_content += "\nSCALARS Coord_Z float 1\n"
+        vtk_content += "LOOKUP_TABLE default\n"
+        for z in puntos_z:
+            vtk_content += f"{z:.6f}\n"
+
+        # Guardar archivo
+        with open(nombre_archivo_vtk, "w", encoding="ascii", errors="replace") as f:
+            f.write(vtk_content)
+
+        if 'st' in globals():
+            st.success(f"✅ Archivo VTK creado exitosamente: {nombre_archivo_vtk}")
+            st.info(f"Superficie con {n_points} puntos y {n_triangles} triángulos")
+
+        return nombre_archivo_vtk
+
     except Exception as e:
-        st.error(f"Error al crear archivo VTK: {str(e)}")
+        if 'st' in globals():
+            st.error(f"❌ Error al crear archivo VTK de superficie Delaunay: {str(e)}")
         return None
+
+
+
+def crear_archivo_vtk_unstructured(puntos, nombre_archivo):
+    """
+    FUNCIÓN ORIGINAL: Crea archivo VTK en formato UNSTRUCTURED_GRID a partir de puntos dispersos.
+    Parámetros:
+        puntos: lista de tuplas (y, z, presion) O DataFrame con columnas Y, Z, Presion
+        nombre_archivo: nombre del archivo de salida (.vtk)
+    """
+    try:
+        # Manejar diferentes tipos de entrada
+        if isinstance(puntos, pd.DataFrame):
+            # Si es DataFrame, convertir a lista de tuplas
+            if 'Y' in puntos.columns and 'Z' in puntos.columns and 'Presion' in puntos.columns:
+                puntos_lista = [(row['Y'], row['Z'], row['Presion']) for _, row in puntos.iterrows()]
+            else:
+                # Si es un DataFrame pivotado, convertir
+                puntos_lista = []
+                for y_idx in puntos.index:
+                    for z_col in puntos.columns:
+                        presion_val = puntos.loc[y_idx, z_col]
+                        if not pd.isna(presion_val):
+                            puntos_lista.append((float(y_idx), float(z_col), float(presion_val)))
+        else:
+            puntos_lista = puntos
+        
+        if not puntos_lista or len(puntos_lista) < 1:
+            return None
+
+        # Filtrar puntos válidos
+        puntos_validos = []
+        for punto in puntos_lista:
+            if len(punto) >= 3:
+                y, z, presion = punto[:3]
+                try:
+                    y_val = float(y)
+                    z_val = float(z)
+                    p_val = float(presion)
+                    if not (pd.isna(y_val) or pd.isna(z_val) or pd.isna(p_val)):
+                        puntos_validos.append((y_val, z_val, p_val))
+                except (ValueError, TypeError):
+                    continue
+
+        if not puntos_validos:
+            return None
+
+        n_points = len(puntos_validos)
+
+        vtk_content = "# vtk DataFile Version 3.0\n"
+        vtk_content += "Datos de Presion Aerodinamica\n"
+        vtk_content += "ASCII\n"
+        vtk_content += "DATASET UNSTRUCTURED_GRID\n"
+        vtk_content += f"POINTS {n_points} float\n"
+
+        # Escribir los puntos (y, z, 0.0)
+        for y, z, presion in puntos_validos:
+            vtk_content += f"{y:.6f} {z:.6f} 0.000000\n"
+
+        vtk_content += f"\nCELLS {n_points} {2*n_points}\n"
+        for i in range(n_points):
+            vtk_content += f"1 {i}\n"
+
+        # Tipos de celda (1 = VTK_VERTEX)
+        vtk_content += f"\nCELL_TYPES {n_points}\n"
+        for i in range(n_points):
+            vtk_content += "1\n"
+
+        vtk_content += f"\nPOINT_DATA {n_points}\n"
+        vtk_content += "SCALARS Presion float 1\n"
+        vtk_content += "LOOKUP_TABLE default\n"
+        for _, _, presion in puntos_validos:
+            vtk_content += f"{presion:.6f}\n"
+
+        with open(nombre_archivo, "w", encoding='ascii', errors='replace') as f:
+            f.write(vtk_content)
+
+        return nombre_archivo
+
+    except Exception as e:
+        if 'st' in globals():
+            st.error(f"Error al crear archivo VTK: {str(e)}")
+        return None
+
 
     
 def crear_sub_archivos_3d_por_tiempo_y_posicion(df_datos, nombre_archivo):
@@ -1252,7 +1375,7 @@ def mostrar_resumen_archivos_tabla(sub_archivos_por_fuente):
     datos_tabla = []
     
     for archivo_fuente, tiempos_dict in sub_archivos_por_fuente.items():
-        for tiempo, sub_archivos_tiempo in tiempos_dict.items():
+        for tiempo, sub_archivos_tiempo in sub_archivos_tiempo:
             for clave, sub_archivo in sub_archivos_tiempo:
                 datos_tabla.append({
                     'Archivo_Fuente': archivo_fuente,
@@ -2411,40 +2534,43 @@ elif st.session_state.seccion_actual == 'herramientas':
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         archivo_matriz = st.file_uploader(
             "Seleccionar archivo de incertidumbre:",
             type=['csv'],
             key="archivo_matriz",
             help="Archivo CSV del cual extraer la matriz de presiones"
         )
-        
+
         nombre_matriz = st.text_input(
             "Nombre de la matriz:",
             value="matriz_presiones",
             key="nombre_matriz",
             help="Nombre personalizado para la matriz de presiones"
         )
-        
+
+        # 👉 Configuración de sensores para esta herramienta
+        configuracion_matriz = mostrar_configuracion_sensores("herramienta2")
+
         if st.button("📊 Extraer Matriz", key="btn_matriz", type="primary"):
             if archivo_matriz:
                 with st.spinner("Extrayendo matriz de presiones..."):
-                    matriz = extraer_matriz_presiones(archivo_matriz)
-                    
-                    if matriz is not None:
+                    matriz = extraer_matriz_presiones_completa(archivo_matriz, configuracion_matriz)
+
+                    if matriz:
                         st.session_state.matriz_presiones = {
                             'matriz': matriz,
-                            'nombre': nombre_matriz  # Usando nombre personalizado
+                            'nombre': nombre_matriz
                         }
-                        
+
                         st.success("✅ Matriz de presiones extraída correctamente")
-                        
-                        # Mostrar preview de la matriz
+
                         st.markdown("**Preview de la matriz:**")
-                        st.dataframe(matriz.head(), use_container_width=True)
-                        
-                        # Botón de descarga con nombre personalizado
-                        csv_matriz = matriz.to_csv(sep=';', decimal=',')
+                        st.dataframe(matriz[:10], use_container_width=True)
+
+                        # Botón de descarga
+                        df_matriz = pd.DataFrame(matriz, columns=["Y", "Z", "Presion"])
+                        csv_matriz = df_matriz.to_csv(sep=';', decimal=',', index=False)
                         st.download_button(
                             label="📥 Descargar Matriz (CSV)",
                             data=csv_matriz.encode('utf-8-sig'),
@@ -2453,6 +2579,7 @@ elif st.session_state.seccion_actual == 'herramientas':
                         )
             else:
                 st.error("❌ Selecciona un archivo de incertidumbre")
+
     
     # HERRAMIENTA 3: Crear archivo VTK
     with col3:
@@ -2462,23 +2589,23 @@ elif st.session_state.seccion_actual == 'herramientas':
                 🎯 Archivo VTK
             </h3>
             <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
-                Crea un archivo VTK para visualización<br>
-                avanzada en ParaView.
+                Crea un archivo VTK para visualización avanzada en ParaView.<br>
+                ⚠️ Debes usar la <b>matriz de presiones</b> (extraída o cargada desde CSV).
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Opciones para usar matriz existente o cargar nueva
+
+        # Fuente de datos
         opcion_matriz = st.radio(
             "Fuente de datos:",
             ["Usar matriz existente", "Cargar nuevo archivo"],
             key="opcion_matriz_vtk",
-            help="Selecciona si usar una matriz ya extraída o cargar un archivo nuevo"
+            help="Selecciona si usar una matriz ya extraída o cargar un archivo nuevo de matriz"
         )
-        
+
         archivo_vtk_source = None
         matriz_disponible = st.session_state.get('matriz_presiones')
-        
+
         if opcion_matriz == "Usar matriz existente":
             if matriz_disponible:
                 st.success(f"✅ Matriz disponible: {matriz_disponible['nombre']}")
@@ -2486,57 +2613,83 @@ elif st.session_state.seccion_actual == 'herramientas':
                 st.warning("⚠️ No hay matriz extraída. Extrae una matriz primero o selecciona 'Cargar nuevo archivo'")
         else:
             archivo_vtk_source = st.file_uploader(
-                "Seleccionar archivo de incertidumbre:",
+                "Seleccionar archivo de matriz de presiones (CSV):",
                 type=['csv'],
                 key="archivo_vtk",
-                help="Archivo CSV para crear el VTK"
+                help="Archivo CSV ya procesado como matriz de presiones"
             )
-        
+
         nombre_vtk = st.text_input(
-            "Nombre del archivo VTK:",
+            "Nombre base del archivo VTK:",
             value="datos_presion",
             key="nombre_vtk",
-            help="Nombre para el archivo VTK resultante"
+            help="Nombre para los archivos VTK resultantes"
         )
-        
-        if st.button("🎯 Crear VTK", key="btn_vtk", type="primary"):
-            matriz_para_vtk = None
-            
+
+        # Función auxiliar para cargar matriz
+        def cargar_matriz_para_vtk():
             if opcion_matriz == "Usar matriz existente" and matriz_disponible:
-                matriz_para_vtk = matriz_disponible['matriz']
-                st.info(f"Usando matriz: {matriz_disponible['nombre']}")
+                st.info(f"Usando matriz existente: {matriz_disponible['nombre']}")
+                return matriz_disponible['matriz']
             elif opcion_matriz == "Cargar nuevo archivo" and archivo_vtk_source:
                 with st.spinner("Extrayendo matriz para VTK..."):
-                    matriz_para_vtk = extraer_matriz_presiones(archivo_vtk_source)
-            
+                    return extraer_matriz_presiones_completa(archivo_vtk_source)
+            return None
+
+        # Botón: VTK de puntos
+        if st.button("📍 Crear VTK (Puntos)", key="btn_vtk_puntos", type="secondary"):
+            matriz_para_vtk = cargar_matriz_para_vtk()
             if matriz_para_vtk is not None:
-                with st.spinner("Creando archivo VTK..."):
-                    contenido_vtk = crear_archivo_vtk(matriz_para_vtk, nombre_vtk)
-                    
-                    if contenido_vtk:
-                        st.session_state.archivo_vtk = {
-                            'contenido': contenido_vtk,
-                            'nombre': nombre_vtk
-                        }
-                        
-                        st.success("✅ Archivo VTK creado correctamente")
-                        
-                        # Información del archivo
-                        ny, nz = matriz_para_vtk.shape
-                        st.info(f"📊 Dimensiones: {ny} × {nz} puntos")
-                        
-                        # Botón de descarga
-                        st.download_button(
-                            label="📥 Descargar VTK",
-                            data=contenido_vtk.encode('utf-8'),
-                            file_name=f"{nombre_vtk}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
-                            mime="application/octet-stream"
-                        )
-            else:
-                if opcion_matriz == "Usar matriz existente":
-                    st.error("❌ No hay matriz disponible. Extrae una matriz primero.")
+                if isinstance(matriz_para_vtk, list):
+                    df_matriz_vtk = pd.DataFrame(matriz_para_vtk, columns=["Y", "Z", "Presion"])
+                    puntos_vtk = matriz_para_vtk
                 else:
-                    st.error("❌ No se pudo obtener la matriz de presiones del archivo.")
+                    df_matriz_vtk = matriz_para_vtk
+                    puntos_vtk = [(row['Y'], row['Z'], row['Presion'])
+                                for _, row in df_matriz_vtk.iterrows()
+                                if not pd.isna(row['Presion'])]
+
+                ruta_vtk = crear_archivo_vtk_unstructured(puntos_vtk, f"{nombre_vtk}_puntos.vtk")
+                if ruta_vtk:
+                    with open(ruta_vtk, "r") as f:
+                        contenido_vtk = f.read()
+                    st.download_button(
+                        label="📥 Descargar VTK (Puntos)",
+                        data=contenido_vtk,
+                        file_name=f"{nombre_vtk}_puntos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
+                        mime="application/octet-stream"
+                    )
+                    st.success("✅ Archivo VTK (puntos) creado correctamente")
+            else:
+                st.error("❌ No se pudo obtener la matriz de presiones")
+
+        # Botón: VTK con superficie
+        if st.button("🕸️ Crear VTK (Superficie)", key="btn_vtk_superficie", type="primary"):
+            matriz_para_vtk = cargar_matriz_para_vtk()
+            if matriz_para_vtk is not None:
+                if isinstance(matriz_para_vtk, list):
+                    df_matriz_vtk = pd.DataFrame(matriz_para_vtk, columns=["Y", "Z", "Presion"])
+                else:
+                    df_matriz_vtk = matriz_para_vtk
+
+                ruta_vtk = crear_archivo_vtk_superficie_delaunay(
+                    df_matriz_vtk,
+                    f"{nombre_vtk}_superficie.vtk"
+                )
+
+                if ruta_vtk:
+                    with open(ruta_vtk, "r") as f:
+                        contenido_vtk = f.read()
+                    st.download_button(
+                        label="📥 Descargar VTK (Superficie)",
+                        data=contenido_vtk,
+                        file_name=f"{nombre_vtk}_superficie_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
+                        mime="application/octet-stream"
+                    )
+                    st.success("✅ Archivo VTK (superficie) creado correctamente")
+            else:
+                st.error("❌ No se pudo generar la superficie VTK (verifica que la matriz esté cargada correctamente)")
+
 
 elif st.session_state.seccion_actual == 'visualizacion':
     st.markdown("# 🖥️ Visualización de Resultados")
@@ -2619,5 +2772,6 @@ st.markdown(f"""
     <p><small>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small></p>
 </div>
 """, unsafe_allow_html=True)
+
 
 
