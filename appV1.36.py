@@ -164,7 +164,7 @@ if 'datos_procesados' not in st.session_state:
 if 'configuracion_inicial' not in st.session_state:
     st.session_state.configuracion_inicial = {}
 if 'sub_archivos_generados' not in st.session_state:
-    st.session_state.sub_archivos_generados = {}
+    st.session_state.sub_archivos_generados = []
 if 'datos_3d_filtrados' not in st.session_state:
     st.session_state.datos_3d_filtrados = {}
 if 'sub_archivos_3d' not in st.session_state:
@@ -181,10 +181,14 @@ def extraer_tiempo_y_coordenadas(nombre_archivo):
     Soporta formatos nuevos como:
         XY_SapySync_X_1_Y_180_250811164701_10.CSV  -> tiempo=10, X=1, Y=180
     y formatos antiguos (T10s, X0, Y0, X-0, etc).
+    
+    NOTA: Las coordenadas extraídas del archivo vienen como "X" e "Y", pero
+    la coordenada "X" del traverser será nuestra coordenada "y" y 
+    la coordenada "Y" será nuestra coordenada "z" para mapear en el plano YZ.
     """
     tiempo = None
-    x_coord = None
-    y_coord = None
+    x_coord = None  # Esta será nuestra coordenada "y" 
+    y_coord = None  # Esta será nuestra coordenada "z"
 
     # Normalizar nombre sin extensión
     nombre = os.path.basename(str(nombre_archivo))
@@ -205,17 +209,18 @@ def extraer_tiempo_y_coordenadas(nombre_archivo):
             tiempo = int(tiempo_match.group(1))
 
     # 3) Extraer X y Y con varios posibles formatos: X_1, X1, X=1, X-1
+    # NOTA: X del archivo será nuestra Y, Y del archivo será nuestra Z
     x_match = re.search(r"[Xx][_\-=]?(-?\d+)", nombre_sin_ext)
     if x_match:
         try:
-            x_coord = int(x_match.group(1))
+            x_coord = int(x_match.group(1))  # X del archivo = Y nuestra
         except:
             x_coord = None
 
     y_match = re.search(r"[Yy][_\-=]?(-?\d+)", nombre_sin_ext)
     if y_match:
         try:
-            y_coord = int(y_match.group(1))
+            y_coord = int(y_match.group(1))  # Y del archivo = Z nuestra
         except:
             y_coord = None
 
@@ -682,7 +687,7 @@ def crear_superficie_diferencia_delaunay_3d(datos_a, datos_b, nombre_a, nombre_b
                 xaxis_title="Posición X Traverser [mm]",
                 yaxis_title="Altura Física Z [mm]",
                 zaxis_title="Δ Presión [Pa]",
-                aspectratio=dict(x=1.5, y=2, z=1),
+                aspectratio=dict(x=1, y=1, z=0.3),
                 camera=dict(eye=dict(x=1.6, y=1.6, z=0.9))
             ),
             width=1600,
@@ -970,15 +975,15 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
         distancia_entre_tomas = configuracion_3d['distancia_entre_tomas']
         orden = configuracion_3d['orden']
 
-        puntos_x, puntos_y_altura, presiones_z = [], [], []
+        puntos_y, puntos_z_altura, presiones_z = [], [], []  # Cambio de nombres: x->y, y->z
 
         # Detectar columnas de sensores
         sensor_cols = [c for c in datos_completos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
 
         for _, fila in datos_completos.iterrows():
-            x_traverser = fila.get('X_coord', None)
-            y_traverser = fila.get('Y_coord', None)
-            if pd.isna(x_traverser) or pd.isna(y_traverser):
+            y_traverser = fila.get('X_coord', None)  # X_coord del archivo es nuestra Y
+            z_traverser = fila.get('Y_coord', None)  # Y_coord del archivo es nuestra Z
+            if pd.isna(y_traverser) or pd.isna(z_traverser):
                 continue
 
             for col in sensor_cols:
@@ -986,7 +991,7 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
                 if sensor_num is None:
                     continue
                 altura_sensor_real = sensor_num_a_altura(
-                    sensor_num, y_traverser, posicion_inicial, distancia_entre_tomas, orden
+                    sensor_num, z_traverser, posicion_inicial, distancia_entre_tomas, orden
                 )
                 presion = fila.get(col, None)
                 if pd.isna(presion) or presion is None:
@@ -995,26 +1000,26 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
                     if isinstance(presion, str):
                         presion = float(presion.replace(',', '.'))
                     presion_val = float(presion)
-                    puntos_x.append(x_traverser)
-                    puntos_y_altura.append(altura_sensor_real)
+                    puntos_y.append(y_traverser)  # Ahora es Y
+                    puntos_z_altura.append(altura_sensor_real)  # Ahora es Z
                     presiones_z.append(presion_val)
                 except (ValueError, TypeError):
                     continue
 
-        if len(puntos_x) < 4:
+        if len(puntos_y) < 4:
             st.error("No hay suficientes datos válidos para generar una superficie.")
             return None
 
         # Triangulación Delaunay
-        puntos_2d = np.vstack([puntos_x, puntos_y_altura]).T
+        puntos_2d = np.vstack([puntos_y, puntos_z_altura]).T
         tri = Delaunay(puntos_2d)
 
         fig = go.Figure()
 
         # Superficie principal
         fig.add_trace(go.Mesh3d(
-            x=puntos_x,
-            y=puntos_y_altura,
+            x=puntos_y,  # Ahora Y en eje X del gráfico
+            y=puntos_z_altura,  # Ahora Z en eje Y del gráfico
             z=presiones_z,
             i=tri.simplices[:, 0],
             j=tri.simplices[:, 1],
@@ -1025,25 +1030,25 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
             name='Superficie de presión',
             lighting=dict(ambient=0.5, diffuse=0.8, specular=0.5, roughness=0.5, fresnel=0.2),
             lightposition=dict(x=100, y=200, z=100),
-            hovertemplate='<b>Presión</b>: %{intensity:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+            hovertemplate='<b>Presión</b>: %{intensity:.3f} Pa<br>Pos Y: %{x:.1f} mm<br>Altura Z: %{y:.1f} mm<extra></extra>'
         ))
 
         # Wireframe
-        wire_x, wire_y, wire_z = [], [], []
+        wire_y, wire_z, wire_presion = [], [], []
         for simplex in tri.simplices:
             for idx_pair in [(0,1), (1,2), (2,0)]:
                 for idx in idx_pair:
-                    wire_x.append(puntos_x[simplex[idx]])
-                    wire_y.append(puntos_y_altura[simplex[idx]])
-                    wire_z.append(presiones_z[simplex[idx]])
-                wire_x.append(None)
+                    wire_y.append(puntos_y[simplex[idx]])
+                    wire_z.append(puntos_z_altura[simplex[idx]])
+                    wire_presion.append(presiones_z[simplex[idx]])
                 wire_y.append(None)
                 wire_z.append(None)
+                wire_presion.append(None)
 
         fig.add_trace(go.Scatter3d(
-            x=wire_x,
-            y=wire_y,
-            z=wire_z,
+            x=wire_y,
+            y=wire_z,
+            z=wire_presion,
             mode='lines',
             line=dict(color='black', width=1),
             name='Malla',
@@ -1053,23 +1058,23 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
         # Puntos medidos (si mostrar_puntos=True)
         if mostrar_puntos:
             fig.add_trace(go.Scatter3d(
-                x=puntos_x,
-                y=puntos_y_altura,
+                x=puntos_y,
+                y=puntos_z_altura,
                 z=presiones_z,
                 mode='markers',
                 marker=dict(size=3, color='red'),
                 name='Puntos medidos',
-                hovertemplate='<b>Punto medido</b><br>Presión: %{z:.3f} Pa<br>Pos X: %{x:.1f} mm<br>Altura: %{y:.1f} mm<extra></extra>'
+                hovertemplate='<b>Punto medido</b><br>Presión: %{z:.3f} Pa<br>Pos Y: %{x:.1f} mm<br>Altura Z: %{y:.1f} mm<extra></extra>'
             ))
 
         fig.update_layout(
             title=f"Superficie de Presión 3D Mejorada - {nombre_archivo}",
             scene=dict(
-                xaxis_title="Posición X Traverser [mm]",
-                yaxis_title="Altura Física Real del Sensor [mm]",
+                xaxis_title="Posición Y Traverser [mm]",  # Cambio de etiquetas
+                yaxis_title="Altura Física Z [mm]",  # Cambio de etiquetas
                 zaxis_title="Presión [Pa]",
-                aspectratio=dict(x=1, y=2, z=0.8),
-                camera=dict(eye=dict(x=1.6, y=1.6, z=0.9))
+                aspectmode='data',  # Configuración manual para escala 1:1
+                aspectratio=dict(x=1, y=1, z=1),  # Relación 1:1 entre Y y Z
             ),
             width=1600,
             height=900,
@@ -1082,7 +1087,138 @@ def crear_superficie_delaunay_3d(datos_completos, configuracion_3d, nombre_archi
         st.error(f"Error creando la superficie de malla 3D mejorada: {str(e)}")
         return None
 
+def unir_archivos_incertidumbre(archivos_lista, nombre_salida):
+    """Une múltiples archivos de incertidumbre en uno solo"""
+    try:
+        contenido_unido = []
+        puntos_sobrepuestos = []
+        coordenadas_vistas = set()
+        
+        for archivo in archivos_lista:
+            # Leer archivo CSV
+            df_raw = pd.read_csv(archivo, sep=";", header=None, dtype=str)
+            
+            # Buscar la palabra "importante" para determinar dónde terminar
+            index_final = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains("importante", case=False).any(), axis=1)].index
+            if not index_final.empty:
+                df_raw = df_raw.iloc[:index_final[0]]
+            
+            # Procesar bloques de 10 filas
+            for i in range(0, df_raw.shape[0], 10):
+                bloque = df_raw.iloc[i:i+10]
+                if bloque.empty or len(bloque) < 3:
+                    continue
+                
+                nombre_archivo_bloque = bloque.iloc[0, 0]
+                tiempo, x_coord, y_coord = extraer_tiempo_y_coordenadas(nombre_archivo_bloque)
+                
+                # Verificar si hay puntos sobrepuestos
+                coordenada_key = (x_coord, y_coord, tiempo)
+                if coordenada_key in coordenadas_vistas:
+                    puntos_sobrepuestos.append(coordenada_key)
+                else:
+                    coordenadas_vistas.add(coordenada_key)
+                
+                # Agregar bloque al contenido unido
+                contenido_unido.extend(bloque.values.tolist())
+        
+        # Crear DataFrame final
+        df_unido = pd.DataFrame(contenido_unido)
+        
+        # Convertir a CSV
+        csv_output = df_unido.to_csv(sep=';', index=False, header=False)
+        
+        return csv_output, puntos_sobrepuestos
+        
+    except Exception as e:
+        st.error(f"Error al unir archivos: {str(e)}")
+        return None, []
 
+def extraer_matriz_presiones(archivo_incertidumbre):
+    """Extrae matriz de presiones donde filas=Y, columnas=Z, valores=presión"""
+    try:
+        # Procesar archivo de incertidumbre
+        datos = procesar_promedios(archivo_incertidumbre, "asc")
+        if datos is None:
+            return None
+        
+        # Crear matriz de presiones
+        coordenadas_y = sorted(datos['X_coord'].dropna().unique())  # X_coord del archivo = Y nuestra
+        coordenadas_z = sorted(datos['Y_coord'].dropna().unique())  # Y_coord del archivo = Z nuestra
+        
+        # Crear matriz vacía
+        matriz = pd.DataFrame(index=coordenadas_y, columns=coordenadas_z)
+        matriz = matriz.fillna(0.0)
+        
+        # Llenar matriz con valores de presión promedio
+        for _, fila in datos.iterrows():
+            y_coord = fila.get('X_coord')  # X_coord del archivo = Y nuestra
+            z_coord = fila.get('Y_coord')  # Y_coord del archivo = Z nuestra
+            
+            if pd.notna(y_coord) and pd.notna(z_coord):
+                # Obtener columnas de sensores y promediar
+                sensor_cols = [c for c in datos.columns if re.search(r'(?i)presion[-_ ]*sensor', str(c))]
+                presiones = []
+                
+                for col in sensor_cols:
+                    valor = fila.get(col)
+                    if pd.notna(valor):
+                        try:
+                            if isinstance(valor, str):
+                                valor = float(valor.replace(',', '.'))
+                            presiones.append(float(valor))
+                        except:
+                            continue
+                
+                if presiones:
+                    matriz.loc[y_coord, z_coord] = np.mean(presiones)
+        
+        return matriz
+        
+    except Exception as e:
+        st.error(f"Error al extraer matriz de presiones: {str(e)}")
+        return None
+
+def crear_archivo_vtk(matriz_presiones, nombre_archivo):
+    """Crea archivo VTK para visualización en ParaView"""
+    try:
+        if matriz_presiones is None:
+            return None
+        
+        # Obtener dimensiones
+        ny = len(matriz_presiones.index)
+        nz = len(matriz_presiones.columns)
+        
+        # Crear contenido VTK
+        vtk_content = f"""# vtk DataFile Version 3.0
+Datos de Presion Aerodinamica
+ASCII
+DATASET STRUCTURED_GRID
+DIMENSIONS {nz} {ny} 1
+
+POINTS {ny * nz} float
+"""
+        
+        # Agregar puntos
+        for i, y in enumerate(matriz_presiones.index):
+            for j, z in enumerate(matriz_presiones.columns):
+                vtk_content += f"{float(y)} {float(z)} 0.0\n"
+        
+        # Agregar datos de presión
+        vtk_content += f"\nPOINT_DATA {ny * nz}\n"
+        vtk_content += "SCALARS Presion float 1\n"
+        vtk_content += "LOOKUP_TABLE default\n"
+        
+        for i, y in enumerate(matriz_presiones.index):
+            for j, z in enumerate(matriz_presiones.columns):
+                presion = matriz_presiones.loc[y, z]
+                vtk_content += f"{float(presion)}\n"
+        
+        return vtk_content
+        
+    except Exception as e:
+        st.error(f"Error al crear archivo VTK: {str(e)}")
+        return None
 
     
 def crear_sub_archivos_3d_por_tiempo_y_posicion(df_datos, nombre_archivo):
@@ -1180,6 +1316,10 @@ with st.sidebar:
     if st.button("🌪️ BETZ 3D", use_container_width=True):
         st.session_state.seccion_actual = 'betz_3d'
         st.rerun()
+    
+    if st.button("🔧 HERRAMIENTAS DE PROCESAMIENTO", use_container_width=True):
+        st.session_state.seccion_actual = 'herramientas'
+        st.rerun()
 
     if st.button("🖥️ Visualización de Resultados", use_container_width=True):
         st.session_state.seccion_actual = 'visualizacion'
@@ -1201,6 +1341,7 @@ with st.sidebar:
     # Corregido para usar la clave correcta de las diferencias guardadas
     if st.session_state.get('diferencias_guardadas'):
         st.markdown(f"**Diferencias guardadas:** {len(st.session_state.diferencias_guardadas)}")
+
 # Contenido principal según la sección
 if st.session_state.seccion_actual == 'inicio':
     # Página de inicio
@@ -1215,8 +1356,8 @@ if st.session_state.seccion_actual == 'inicio':
     </div>
     """, unsafe_allow_html=True)
     
-    # Secciones principales
-    col1, col2 = st.columns(2, gap="large")
+    # Secciones principales - ahora con 4 columnas
+    col1, col2, col3, col4 = st.columns(4, gap="large")
     
     with col1:
         st.markdown("""
@@ -1258,6 +1399,48 @@ if st.session_state.seccion_actual == 'inicio':
         
         if st.button("ACCEDER A BETZ 3D", key="betz_3d_btn", type="primary", use_container_width=True):
             st.session_state.seccion_actual = 'betz_3d'
+            st.rerun()
+    
+    with col3:
+        st.markdown("""
+        <div class="section-card">
+            <h3 style="color: #08596C; font-size: 2rem; margin-bottom: 1rem; text-align: center;">
+                🔧 HERRAMIENTAS
+            </h3>
+            <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
+                Herramientas de procesamiento avanzado.<br><br>
+                • Unir archivos de incertidumbre<br>
+                • Extraer matriz de presiones<br>
+                • Crear archivos VTK<br>
+                • Procesamiento automático<br>
+                • Exportación múltiple
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("ACCEDER A HERRAMIENTAS", key="herramientas_btn", type="primary", use_container_width=True):
+            st.session_state.seccion_actual = 'herramientas'
+            st.rerun()
+    
+    with col4:
+        st.markdown("""
+        <div class="section-card">
+            <h3 style="color: #08596C; font-size: 2rem; margin-bottom: 1rem; text-align: center;">
+                🖥️ VISUALIZACIÓN
+            </h3>
+            <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
+                Comparación y análisis de resultados.<br><br>
+                • Agregar gráficos 2D y 3D<br>
+                • Comparar resultados<br>
+                • Análisis de diferencias<br>
+                • Exportación de gráficos<br>
+                • Visualización interactiva
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("ACCEDER A VISUALIZACIÓN", key="visualizacion_btn", type="primary", use_container_width=True):
+            st.session_state.seccion_actual = 'visualizacion'
             st.rerun()
 
 elif st.session_state.seccion_actual == 'betz_2d':
@@ -1870,7 +2053,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
     with col_imagen:
         st.markdown("### 📐 Diagrama de Referencia")
         st.markdown("""
-        <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 2rem; text-align: center; color: #64748b;">
+        <div style="background: #f8fafc; border: 2px dashed #e5e7eb; border-radius: 12px; padding: 2rem; text-align: center; color: #64748b;">
             <h4>📐 Diagrama de Referencia</h4>
             <p>Aquí iría el diagrama técnico de sensores</p>
             <p><small>Subir imagen del plano técnico</small></p>
@@ -2131,6 +2314,230 @@ elif st.session_state.seccion_actual == 'betz_3d':
     else:
         st.info("⚙️ Complete la configuración 3D para continuar")
 
+elif st.session_state.seccion_actual == 'herramientas':
+    st.markdown("""
+    <div class="header-container">
+        <h1 style="font-size: 3rem; margin-bottom: 1rem; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+            🔧 HERRAMIENTAS DE PROCESAMIENTO
+        </h1>
+        <h2 style="font-size: 1.8rem; margin-bottom: 0; opacity: 0.9;">
+            Herramientas avanzadas para el procesamiento y análisis de datos aerodinámicos
+        </h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Inicializar variables de sesión si no existen
+    if 'archivos_unidos' not in st.session_state:
+        st.session_state.archivos_unidos = None
+    if 'matriz_presiones' not in st.session_state:
+        st.session_state.matriz_presiones = None
+    if 'archivo_vtk' not in st.session_state:
+        st.session_state.archivo_vtk = None
+    
+    # Crear tres columnas para las herramientas
+    col1, col2, col3 = st.columns(3)
+    
+    # HERRAMIENTA 1: Unir archivos de incertidumbre
+    with col1:
+        st.markdown("""
+        <div class="section-card">
+            <h3 style="color: #08596C; font-size: 1.5rem; margin-bottom: 1rem; text-align: center;">
+                📁 Unir Archivos de Incertidumbre
+            </h3>
+            <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
+                Une múltiples archivos de incertidumbre en un solo Excel.<br>
+                Detecta automáticamente puntos sobrepuestos.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        archivos_union = st.file_uploader(
+            "Seleccionar archivos de incertidumbre:",
+            type=['csv'],
+            accept_multiple_files=True,
+            key="union_archivos",
+            help="Selecciona los archivos CSV que deseas unir"
+        )
+        
+        nombre_archivo_union = st.text_input(
+            "Nombre del archivo unificado:",
+            value="archivos_unidos",
+            key="nombre_union",
+            help="Nombre para el archivo Excel resultante"
+        )
+        
+        if st.button("🔗 Unir Archivos", key="btn_unir", type="primary"):
+            if archivos_union and len(archivos_union) > 1:
+                with st.spinner("Uniendo archivos..."):
+                    contenido_unido, puntos_sobrepuestos = unir_archivos_incertidumbre(
+                        archivos_union, nombre_archivo_union
+                    )
+                    
+                    if contenido_unido:
+                        st.session_state.archivos_unidos = {
+                            'contenido': contenido_unido,
+                            'nombre': nombre_archivo_union,
+                            'puntos_sobrepuestos': puntos_sobrepuestos
+                        }
+                        
+                        st.success(f"✅ {len(archivos_union)} archivos unidos correctamente")
+                        
+                        if puntos_sobrepuestos:
+                            st.warning(f"⚠️ Se detectaron {len(puntos_sobrepuestos)} puntos sobrepuestos")
+                            with st.expander("Ver puntos sobrepuestos"):
+                                for punto in puntos_sobrepuestos:
+                                    st.write(f"Y={punto[0]}, Z={punto[1]}, Tiempo={punto[2]}s")
+                        
+                        # Botón de descarga
+                        st.download_button(
+                            label="📥 Descargar Archivo Unido (CSV)",
+                            data=contenido_unido.encode('utf-8-sig'),
+                            file_name=f"{nombre_archivo_union}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+            else:
+                st.error("❌ Selecciona al menos 2 archivos para unir")
+    
+    # HERRAMIENTA 2: Extraer matriz de presiones
+    with col2:
+        st.markdown("""
+        <div class="section-card">
+            <h3 style="color: #08596C; font-size: 1.5rem; margin-bottom: 1rem; text-align: center;">
+                📊 Matriz de Presiones
+            </h3>
+            <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
+                Extrae una matriz donde filas=Y, columnas=Z,<br>
+                y los valores son las presiones medidas.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        archivo_matriz = st.file_uploader(
+            "Seleccionar archivo de incertidumbre:",
+            type=['csv'],
+            key="archivo_matriz",
+            help="Archivo CSV del cual extraer la matriz de presiones"
+        )
+        
+        nombre_matriz = st.text_input(
+            "Nombre de la matriz:",
+            value="matriz_presiones",
+            key="nombre_matriz",
+            help="Nombre personalizado para la matriz de presiones"
+        )
+        
+        if st.button("📊 Extraer Matriz", key="btn_matriz", type="primary"):
+            if archivo_matriz:
+                with st.spinner("Extrayendo matriz de presiones..."):
+                    matriz = extraer_matriz_presiones(archivo_matriz)
+                    
+                    if matriz is not None:
+                        st.session_state.matriz_presiones = {
+                            'matriz': matriz,
+                            'nombre': nombre_matriz  # Usando nombre personalizado
+                        }
+                        
+                        st.success("✅ Matriz de presiones extraída correctamente")
+                        
+                        # Mostrar preview de la matriz
+                        st.markdown("**Preview de la matriz:**")
+                        st.dataframe(matriz.head(), use_container_width=True)
+                        
+                        # Botón de descarga con nombre personalizado
+                        csv_matriz = matriz.to_csv(sep=';', decimal=',')
+                        st.download_button(
+                            label="📥 Descargar Matriz (CSV)",
+                            data=csv_matriz.encode('utf-8-sig'),
+                            file_name=f"{nombre_matriz}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+            else:
+                st.error("❌ Selecciona un archivo de incertidumbre")
+    
+    # HERRAMIENTA 3: Crear archivo VTK
+    with col3:
+        st.markdown("""
+        <div class="section-card">
+            <h3 style="color: #08596C; font-size: 1.5rem; margin-bottom: 1rem; text-align: center;">
+                🎯 Archivo VTK
+            </h3>
+            <p style="color: #4b5563; line-height: 1.6; margin-bottom: 1.5rem; text-align: center;">
+                Crea un archivo VTK para visualización<br>
+                avanzada en ParaView.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Opciones para usar matriz existente o cargar nueva
+        opcion_matriz = st.radio(
+            "Fuente de datos:",
+            ["Usar matriz existente", "Cargar nuevo archivo"],
+            key="opcion_matriz_vtk",
+            help="Selecciona si usar una matriz ya extraída o cargar un archivo nuevo"
+        )
+        
+        archivo_vtk_source = None
+        matriz_disponible = st.session_state.get('matriz_presiones')
+        
+        if opcion_matriz == "Usar matriz existente":
+            if matriz_disponible:
+                st.success(f"✅ Matriz disponible: {matriz_disponible['nombre']}")
+            else:
+                st.warning("⚠️ No hay matriz extraída. Extrae una matriz primero o selecciona 'Cargar nuevo archivo'")
+        else:
+            archivo_vtk_source = st.file_uploader(
+                "Seleccionar archivo de incertidumbre:",
+                type=['csv'],
+                key="archivo_vtk",
+                help="Archivo CSV para crear el VTK"
+            )
+        
+        nombre_vtk = st.text_input(
+            "Nombre del archivo VTK:",
+            value="datos_presion",
+            key="nombre_vtk",
+            help="Nombre para el archivo VTK resultante"
+        )
+        
+        if st.button("🎯 Crear VTK", key="btn_vtk", type="primary"):
+            matriz_para_vtk = None
+            
+            if opcion_matriz == "Usar matriz existente" and matriz_disponible:
+                matriz_para_vtk = matriz_disponible['matriz']
+                st.info(f"Usando matriz: {matriz_disponible['nombre']}")
+            elif opcion_matriz == "Cargar nuevo archivo" and archivo_vtk_source:
+                with st.spinner("Extrayendo matriz para VTK..."):
+                    matriz_para_vtk = extraer_matriz_presiones(archivo_vtk_source)
+            
+            if matriz_para_vtk is not None:
+                with st.spinner("Creando archivo VTK..."):
+                    contenido_vtk = crear_archivo_vtk(matriz_para_vtk, nombre_vtk)
+                    
+                    if contenido_vtk:
+                        st.session_state.archivo_vtk = {
+                            'contenido': contenido_vtk,
+                            'nombre': nombre_vtk
+                        }
+                        
+                        st.success("✅ Archivo VTK creado correctamente")
+                        
+                        # Información del archivo
+                        ny, nz = matriz_para_vtk.shape
+                        st.info(f"📊 Dimensiones: {ny} × {nz} puntos")
+                        
+                        # Botón de descarga
+                        st.download_button(
+                            label="📥 Descargar VTK",
+                            data=contenido_vtk.encode('utf-8'),
+                            file_name=f"{nombre_vtk}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
+                            mime="application/octet-stream"
+                        )
+            else:
+                if opcion_matriz == "Usar matriz existente":
+                    st.error("❌ No hay matriz disponible. Extrae una matriz primero.")
+                else:
+                    st.error("❌ No se pudo obtener la matriz de presiones del archivo.")
+
 elif st.session_state.seccion_actual == 'visualizacion':
     st.markdown("# 🖥️ Visualización de Resultados")
     st.markdown("Agrega y compara gráficos 2D y 3D generados en BETZ.")
@@ -2150,7 +2557,14 @@ elif st.session_state.seccion_actual == 'visualizacion':
     diferencias_guardadas = st.session_state.get("diferencias_guardadas", {})
 
     # --- Selector único que une 2D, 3D y diferencias guardadas ---
-    opciones = list(sub_archivos_2d.keys()) + list(sub_archivos_3d.keys()) + list(diferencias_guardadas.keys())
+    opciones = []
+    if isinstance(sub_archivos_2d, dict):
+        opciones.extend(list(sub_archivos_2d.keys()))
+    if isinstance(sub_archivos_3d, dict):
+        opciones.extend(list(sub_archivos_3d.keys()))
+    if isinstance(diferencias_guardadas, dict):
+        opciones.extend(list(diferencias_guardadas.keys()))
+    
     if st.session_state.get("configuracion_inicial"):
         posiciones_sensores = calcular_posiciones_sensores(
             st.session_state.configuracion_inicial['distancia_toma_12'],
@@ -2196,48 +2610,14 @@ elif st.session_state.seccion_actual == 'visualizacion':
     else:
         st.info("No hay resultados 2D o 3D disponibles para visualizar. Procesa/guarda alguno en BETZ 2D o BETZ 3D.")
 
-    # --- SECCIÓN PARA MOSTRAR Y ELIMINAR LOS GRÁFICOS AGREGADOS ---
-    if st.session_state.graficos_guardados:
-        st.markdown("---")
-        st.markdown("### Gráficos Agregados")
-
-        if st.button("🗑️ Limpiar todos los gráficos"):
-            st.session_state.graficos_guardados = []
-            st.rerun()
-
-        cols = st.columns(2)
-
-        # Iteramos sobre una copia de la lista para poder modificar la original
-        for i, (titulo, fig) in enumerate(list(st.session_state.graficos_guardados)):
-            with cols[i % 2]:
-                st.markdown(f"#### {titulo}")
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Botón para eliminar ese gráfico concreto
-                # Key única que combina índice + título (evita colisiones)
-                if st.button("❌ Eliminar Gráfico", key=f"eliminar_{i}_{titulo}"):
-                    # eliminar por índice
-                    st.session_state.graficos_guardados.pop(i)
-                    st.success(f"Gráfico '{titulo}' eliminado")
-                    st.rerun()
-
-    # (Opcional) zona para descargas globales o métricas adicionales
-    st.markdown("---")
-    st.markdown("### 🔽 Descargas / Resumen rápido")
-    if st.session_state.graficos_guardados:
-        st.write(f"Gráficos en el lienzo: {len(st.session_state.graficos_guardados)}")
-    else:
-        st.write("No hay gráficos en el lienzo actualmente.")
-
 # Footer
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #6b7280; padding: 2rem;'>
     <p><strong>Laboratorio de Aerodinámica y Fluidos - UTN HAEDO</strong></p>
-    <p>Sistema de Análisis de Datos Aerodinámicos • Versión 1.37 - </p>
+    <p>Sistema de Análisis de Datos Aerodinámicos • Versión 1.43 - Con Herramientas de Procesamiento</p>
     <p><small>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small></p>
 </div>
 """, unsafe_allow_html=True)
-
 
 
