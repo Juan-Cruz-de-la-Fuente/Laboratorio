@@ -4,3 +4,4 @@ numpy>=1.21.0
 matplotlib>=3.4.0
 plotly>=5.5.0
 scipy>=1.7.0
+pyvista>=0.43.0
