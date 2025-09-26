@@ -15,7 +15,7 @@ import os
 import zipfile
 import random
 import pyvista as pv
-
+from scipy.interpolate import griddata
 
 # Configuración de la página
 st.set_page_config(
@@ -1243,7 +1243,7 @@ def extraer_matriz_presiones_completa(archivo_incertidumbre, configuracion):
         return pd.DataFrame(columns=["Y", "Z", "Presion"])
 
 
-def crear_archivo_vtk_superficie_delaunay_corregido(df_matriz, nombre_archivo_vtk):
+def crear_archivo_vtk_superficie_delaunay(df_matriz, nombre_archivo_vtk):
     """
     Genera un archivo VTK con superficie triangulada (Delaunay) CORREGIDO para Salome/ParaView.
     La matriz debe tener columnas: Y, Z, Presion.
@@ -1424,101 +1424,78 @@ def cargar_matriz_para_vtk():
 
     return None
 
-def crear_vtk_matriz_estructurada_corregido(df_matriz, nombre_base):
+def crear_vtk_campo_2d_plano_yz(df_matriz, nombre_base):
     """
-    NUEVA FUNCIÓN: Genera un archivo VTK con grilla estructurada para campos de presión en planos.
-    Optimizado para ParaView y Salome.
+    Genera un archivo VTK con una grilla ESTRUCTURADA y PLANA en el plano YZ (X=0).
+    La presión se guarda como un campo escalar (datos en los puntos), ideal para mapas de colores.
+    Esta es la forma correcta de ver un campo 2D en ParaView.
     """
     try:
+        if df_matriz.empty or not {"Y", "Z", "Presion"}.issubset(df_matriz.columns):
+            st.error("El DataFrame para VTK 2D está vacío o no tiene las columnas requeridas (Y, Z, Presion).")
+            return None
+
         # Obtener valores únicos y ordenados de Y y Z
         y_vals = sorted(df_matriz['Y'].unique())
         z_vals = sorted(df_matriz['Z'].unique())
-        
         ny, nz = len(y_vals), len(z_vals)
-        
+
         if ny < 2 or nz < 2:
-            print("Error: Se necesitan al menos 2 valores únicos en Y y Z para crear una grilla estructurada")
+            st.warning("Se necesitan al menos 2 valores únicos en Y y Z para crear una grilla estructurada.")
             return None
-        
-        # Crear grilla estructurada
+
+        # Crear la matriz de presiones interpolando si es necesario
         Y_grid, Z_grid = np.meshgrid(y_vals, z_vals, indexing='ij')
-        
-        # Inicializar matriz de presiones
         P_grid = np.full((ny, nz), np.nan)
-        
-        # Llenar la matriz con los datos disponibles
+
         for _, row in df_matriz.iterrows():
-            try:
-                y_idx = y_vals.index(row['Y'])
-                z_idx = z_vals.index(row['Z'])
-                P_grid[y_idx, z_idx] = row['Presion']
-            except ValueError:
-                continue
-        
-        # Interpolar valores faltantes (opcional)
-        mask = ~np.isnan(P_grid)
-        if np.sum(mask) > 0:
+            y_idx = y_vals.index(row['Y'])
+            z_idx = z_vals.index(row['Z'])
+            P_grid[y_idx, z_idx] = row['Presion']
+
+        # Interpolar valores NaN para una superficie continua (opcional pero recomendado)
+        if np.isnan(P_grid).any():
             from scipy.interpolate import griddata
+            mask = ~np.isnan(P_grid)
             points = np.column_stack([Y_grid[mask], Z_grid[mask]])
             values = P_grid[mask]
-            
-            # Interpolar en toda la grilla
-            Y_flat = Y_grid.flatten()
-            Z_flat = Z_grid.flatten()
-            grid_points = np.column_stack([Y_flat, Z_flat])
-            
-            P_interp = griddata(points, values, grid_points, method='linear', fill_value=0.0)
-            P_grid = P_interp.reshape(ny, nz)
-        
-        # Crear archivo VTK estructurado
-        nombre_archivo = f"{nombre_base}_estructurado.vtk"
-        
+            P_grid = griddata(points, values, (Y_grid, Z_grid), method='cubic', fill_value=0.0)
+
+        nombre_archivo = f"{nombre_base}_campo_2D_plano_YZ.vtk"
+
+        # Contenido del archivo VTK
         vtk_content = "# vtk DataFile Version 3.0\n"
-        vtk_content += "Grilla Estructurada - Campo de Presiones\n"
+        vtk_content += "Campo de Presiones 2D en plano YZ\n"
         vtk_content += "ASCII\n"
         vtk_content += "DATASET STRUCTURED_GRID\n"
-        vtk_content += f"DIMENSIONS {nz} {ny} 1\n"  # Note: VTK usa orden (X,Y,Z) = (Z,Y,1)
-        vtk_content += f"POINTS {ny*nz} float\n"
-        
-        # Escribir puntos en orden correcto para VTK
-        for j in range(ny):  # Y
-            for i in range(nz):  # Z
-                # Usar presión como coordenada Z (altura)
-                vtk_content += f"{Z_grid[j,i]:.6f} {Y_grid[j,i]:.6f} {P_grid[j,i]:.6f}\n"
-        
-        # Datos escalares
-        vtk_content += f"\nPOINT_DATA {ny*nz}\n"
+        # Dimensiones en VTK son (nx, ny, nz). Para nuestro plano YZ, esto es (1, ny, nz)
+        vtk_content += f"DIMENSIONS 1 {ny} {nz}\n"
+        vtk_content += f"POINTS {ny * nz} float\n"
+
+        # Escribir los puntos. Todos con X=0 para que queden en el plano YZ.
+        for j in range(nz):
+            for i in range(ny):
+                # Formato (X, Y, Z)
+                vtk_content += f"0.0 {y_vals[i]:.6f} {z_vals[j]:.6f}\n"
+
+        # Asociar los datos de presión a los puntos
+        vtk_content += f"\nPOINT_DATA {ny * nz}\n"
         vtk_content += "SCALARS Presion float 1\n"
         vtk_content += "LOOKUP_TABLE default\n"
-        
-        for j in range(ny):
-            for i in range(nz):
-                vtk_content += f"{P_grid[j,i]:.6f}\n"
-        
-        # Campos adicionales
-        vtk_content += "\nSCALARS Coord_Y float 1\n"
-        vtk_content += "LOOKUP_TABLE default\n"
-        for j in range(ny):
-            for i in range(nz):
-                vtk_content += f"{Y_grid[j,i]:.6f}\n"
-        
-        vtk_content += "\nSCALARS Coord_Z float 1\n"
-        vtk_content += "LOOKUP_TABLE default\n"
-        for j in range(ny):
-            for i in range(nz):
-                vtk_content += f"{Z_grid[j,i]:.6f}\n"
-        
-        # Guardar archivo
-        with open(nombre_archivo, "w", encoding="ascii", errors="replace") as f:
+        # Escribir las presiones en el orden correcto
+        for j in range(nz):
+            for i in range(ny):
+                vtk_content += f"{P_grid[i, j]:.6f}\n"
+
+        # Guardar el archivo
+        with open(nombre_archivo, "w", encoding="ascii") as f:
             f.write(vtk_content)
-        
-        print(f"✅ Archivo VTK estructurado creado: {nombre_archivo}")
-        print(f"Grilla: {ny}x{nz} puntos")
-        
+
+        st.success(f"✅ Archivo VTK de campo 2D creado: {nombre_archivo}")
         return nombre_archivo
-        
+
     except Exception as e:
-        print(f"❌ Error al crear VTK estructurado: {str(e)}")
+        st.error(f"❌ Error al crear el archivo VTK de campo 2D: {str(e)}")
         return None
 
 def crear_vtk_campo_vectorial(df_matriz, nombre_base):
@@ -1602,78 +1579,75 @@ def crear_vtk_campo_vectorial(df_matriz, nombre_base):
         print(f"❌ Error al crear VTK vectorial: {str(e)}")
         return None
 
-def crear_archivo_vtk_superficie_delaunay(df_matriz, nombre_archivo_vtk):
+def crear_vtk_superficie_3d_delaunay(df_matriz, nombre_base):
     """
-    Genera un archivo VTK con superficie triangulada (Delaunay) a partir de una matriz de presiones.
-    La matriz debe tener columnas: Y, Z, Presion.
+    Genera un archivo VTK con una superficie 3D (malla no estructurada)
+    usando triangulación de Delaunay.
+    La base de la superficie está en el plano YZ y la presión se representa
+    como la coordenada en el eje X.
     """
     try:
-        # Extraer puntos y presiones
-        puntos_y = df_matriz["Y"].astype(float).tolist()
-        puntos_z = df_matriz["Z"].astype(float).tolist()
-        presiones = df_matriz["Presion"].astype(float).tolist()
-
-        if len(puntos_y) < 4:
-            if 'st' in globals():
-                st.error("No hay suficientes puntos válidos para generar una superficie triangulada.")
+        if df_matriz.empty or not {"Y", "Z", "Presion"}.issubset(df_matriz.columns):
+            st.error("El DataFrame para VTK 3D está vacío o no tiene las columnas requeridas.")
             return None
 
-        # Triangulación en el plano (Y,Z)
-        puntos_2d = np.vstack([puntos_y, puntos_z]).T
-        tri = Delaunay(puntos_2d)
+        # Extraer y limpiar los datos
+        puntos_y = df_matriz["Y"].values
+        puntos_z = df_matriz["Z"].values
+        presiones = df_matriz["Presion"].values
+        
+        mask = ~np.isnan(puntos_y) & ~np.isnan(puntos_z) & ~np.isnan(presiones)
+        puntos_y, puntos_z, presiones = puntos_y[mask], puntos_z[mask], presiones[mask]
+
+        if len(puntos_y) < 3:
+            st.error("Se necesitan al menos 3 puntos válidos para la triangulación.")
+            return None
+
+        # La triangulación se sigue haciendo en el plano YZ
+        puntos_2d_plano = np.column_stack([puntos_y, puntos_z])
+        tri = Delaunay(puntos_2d_plano)
 
         n_points = len(puntos_y)
         n_triangles = len(tri.simplices)
+        nombre_archivo_vtk = f"{nombre_base}_superficie_3D_presion_en_X.vtk"
 
+        # Contenido del archivo VTK
         vtk_content = "# vtk DataFile Version 3.0\n"
-        vtk_content += "Superficie Delaunay - Matriz de Presion\n"
+        vtk_content += "Superficie de Presion 3D (Plano YZ, Presion en X)\n"
         vtk_content += "ASCII\n"
         vtk_content += "DATASET UNSTRUCTURED_GRID\n"
         vtk_content += f"POINTS {n_points} float\n"
 
-        # Usamos presión como altura (Z en el espacio 3D)
+        # Escribir los puntos 3D en el orden correcto
         for i in range(n_points):
-            vtk_content += f"{puntos_y[i]:.6f} {puntos_z[i]:.6f} {presiones[i]:.6f}\n"
+            # ---------------------------------------------------------------- #
+            # ¡CAMBIO CLAVE! AHORA LA PRESIÓN VA EN LA COORDENADA X
+            # Formato (X, Y, Z) -> (Presion_valor, Y_coord, Z_coord)
+            vtk_content += f"{presiones[i]:.6f} {puntos_y[i]:.6f} {puntos_z[i]:.6f}\n"
+            # ---------------------------------------------------------------- #
 
-        # Definir celdas triangulares
-        vtk_content += f"\nCELLS {n_triangles} {4*n_triangles}\n"
+        # El resto de la función (celdas y datos) permanece igual
+        vtk_content += f"\nCELLS {n_triangles} {4 * n_triangles}\n"
         for simplex in tri.simplices:
             vtk_content += f"3 {simplex[0]} {simplex[1]} {simplex[2]}\n"
 
         vtk_content += f"\nCELL_TYPES {n_triangles}\n"
-        for _ in range(n_triangles):
-            vtk_content += "5\n"
+        vtk_content += "5\n" * n_triangles
 
-        # Asociar los datos escalares
         vtk_content += f"\nPOINT_DATA {n_points}\n"
         vtk_content += "SCALARS Presion float 1\n"
         vtk_content += "LOOKUP_TABLE default\n"
         for p in presiones:
             vtk_content += f"{p:.6f}\n"
-
-        vtk_content += "\nSCALARS Coord_Y float 1\n"
-        vtk_content += "LOOKUP_TABLE default\n"
-        for y in puntos_y:
-            vtk_content += f"{y:.6f}\n"
-
-        vtk_content += "\nSCALARS Coord_Z float 1\n"
-        vtk_content += "LOOKUP_TABLE default\n"
-        for z in puntos_z:
-            vtk_content += f"{z:.6f}\n"
-
-        # Guardar archivo
-        with open(nombre_archivo_vtk, "w", encoding="ascii", errors="replace") as f:
+            
+        with open(nombre_archivo_vtk, "w", encoding="ascii") as f:
             f.write(vtk_content)
-
-        if 'st' in globals():
-            st.success(f"✅ Archivo VTK creado exitosamente: {nombre_archivo_vtk}")
-            st.info(f"Superficie con {n_points} puntos y {n_triangles} triángulos")
-
+            
+        st.success(f"✅ Archivo VTK 3D (Presión en Eje X) creado: {nombre_archivo_vtk}")
         return nombre_archivo_vtk
 
     except Exception as e:
-        if 'st' in globals():
-            st.error(f"❌ Error al crear archivo VTK de superficie Delaunay: {str(e)}")
+        st.error(f"❌ Error al crear el archivo VTK de superficie 3D: {str(e)}")
         return None
 
 # Sidebar para navegación (colapsable)
@@ -2851,6 +2825,7 @@ elif st.session_state.seccion_actual == 'herramientas':
         </div>
         """, unsafe_allow_html=True)
 
+        # --- Lógica de carga de datos (sin cambios) ---
         opcion_matriz = st.radio(
             "Fuente de datos:",
             ["Usar matriz existente", "Cargar nuevo archivo"],
@@ -2858,21 +2833,31 @@ elif st.session_state.seccion_actual == 'herramientas':
             help="Selecciona si usar una matriz ya extraída o cargar un archivo nuevo de matriz"
         )
 
-        archivo_vtk_source = None
+        df_matriz_vtk = None
         matriz_disponible = st.session_state.get('matriz_presiones')
 
         if opcion_matriz == "Usar matriz existente":
             if matriz_disponible:
                 st.success(f"✅ Matriz disponible: {matriz_disponible['nombre']}")
+                df_matriz_vtk = matriz_disponible['matriz']
             else:
-                st.warning("⚠️ No hay matriz extraída. Extrae una matriz primero o selecciona 'Cargar nuevo archivo'")
+                st.warning("⚠️ No hay matriz extraída. Extrae una o selecciona 'Cargar nuevo archivo'.")
         else:
             archivo_vtk_source = st.file_uploader(
                 "Seleccionar archivo de matriz de presiones (CSV):",
                 type=['csv'],
                 key="archivo_vtk",
-                help="Archivo CSV ya procesado como matriz de presiones"
+                help="Archivo CSV ya procesado como matriz de presiones."
             )
+            if archivo_vtk_source:
+                try:
+                    df_matriz_vtk = pd.read_csv(archivo_vtk_source, sep=';', decimal=',')
+                    if not {"Y", "Z", "Presion"}.issubset(df_matriz_vtk.columns):
+                        st.error("El archivo CSV no contiene las columnas 'Y', 'Z', y 'Presion'.")
+                        df_matriz_vtk = None
+                except Exception as e:
+                    st.error(f"Error al leer el archivo CSV: {e}")
+                    df_matriz_vtk = None
 
         nombre_vtk = st.text_input(
             "Nombre base del archivo VTK:",
@@ -2881,175 +2866,40 @@ elif st.session_state.seccion_actual == 'herramientas':
             help="Nombre para los archivos VTK resultantes"
         )
 
-        def cargar_matriz_para_vtk():
-            if opcion_matriz == "Usar matriz existente" and matriz_disponible:
-                return matriz_disponible['matriz']
-            elif opcion_matriz == "Cargar nuevo archivo" and archivo_vtk_source:
-                try:
-                    df = pd.read_csv(archivo_vtk_source)
-                    if {"Y", "Z", "Presion"}.issubset(df.columns):
-                        return df
-                    else:
-                        return extraer_matriz_presiones_completa(
-                            archivo_vtk_source,
-                            st.session_state.get("configuracion_inicial", {})
-                        )
-                except Exception as e:
-                    st.error(f"Error al cargar CSV: {e}")
-                    return None
-            return None
+        st.markdown("---")
 
-        col_vtk1, col_vtk2 = st.columns(2)
+        # --- Controles de generación de archivos ---
         
-        with col_vtk1:
-            # Botón: VTK de puntos dispersos 2D con campos de presión
-            if st.button("📍 VTK Campo 2D", key="btn_vtk_campo_2d", type="secondary"):
-                df_matriz_vtk = cargar_matriz_para_vtk()
-                if df_matriz_vtk is not None and not df_matriz_vtk.empty:
-                    try:
-                        # Crear grilla estructurada 2D con PyVista
-                        y_vals = sorted(df_matriz_vtk['Y'].unique())
-                        z_vals = sorted(df_matriz_vtk['Z'].unique())
-                        
-                        if len(y_vals) >= 2 and len(z_vals) >= 2:
-                            # Crear grilla estructurada
-                            Y_grid, Z_grid = np.meshgrid(y_vals, z_vals, indexing='ij')
-                            P_grid = np.full((len(y_vals), len(z_vals)), np.nan)
-                            
-                            # Llenar matriz con datos disponibles
-                            for _, row in df_matriz_vtk.iterrows():
-                                try:
-                                    y_idx = y_vals.index(row['Y'])
-                                    z_idx = z_vals.index(row['Z'])
-                                    P_grid[y_idx, z_idx] = row['Presion']
-                                except ValueError:
-                                    continue
-                            
-                            # Interpolar valores faltantes
-                            mask = ~np.isnan(P_grid)
-                            if np.sum(mask) > 0:
-                                from scipy.interpolate import griddata
-                                points = np.column_stack([Y_grid[mask], Z_grid[mask]])
-                                values = P_grid[mask]
-                                Y_flat = Y_grid.flatten()
-                                Z_flat = Z_grid.flatten()
-                                grid_points = np.column_stack([Y_flat, Z_flat])
-                                P_interp = griddata(points, values, grid_points, method='linear', fill_value=0.0)
-                                P_grid = P_interp.reshape(len(y_vals), len(z_vals))
-                            
-                            # Crear grilla estructurada con PyVista
-                            grid = pv.StructuredGrid()
-                            grid.dimensions = [len(z_vals), len(y_vals), 1]
-                            
-                            # Crear puntos en plano Z=0
-                            points = np.zeros((len(y_vals) * len(z_vals), 3))
-                            idx = 0
-                            for j in range(len(y_vals)):
-                                for i in range(len(z_vals)):
-                                    points[idx] = [Z_grid[j,i], Y_grid[j,i], 0.0]
-                                    idx += 1
-                            
-                            grid.points = points
-                            
-                            # Agregar datos escalares
-                            grid['Presion'] = P_grid.flatten()
-                            grid['Coord_Y'] = Y_grid.flatten()
-                            grid['Coord_Z'] = Z_grid.flatten()
-                            
-                            # Calcular gradientes como vectores
-                            grad_y, grad_z = np.gradient(P_grid)
-                            vectors = np.zeros((len(y_vals) * len(z_vals), 3))
-                            idx = 0
-                            for j in range(len(y_vals)):
-                                for i in range(len(z_vals)):
-                                    vectors[idx] = [grad_z[j,i], grad_y[j,i], 0.0]
-                                    idx += 1
-                            grid['Gradiente_Presion'] = vectors
-                            
-                            nombre_archivo_campo = f"{nombre_vtk}_campo_2d.vtk"
-                            grid.save(nombre_archivo_campo)
-                            
-                            with open(nombre_archivo_campo, "rb") as f:
-                                contenido_vtk = f.read()
-                            
-                            st.download_button(
-                                label="📥 Descargar VTK Campo 2D",
-                                data=contenido_vtk,
-                                file_name=f"{nombre_vtk}_campo_2d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
-                                mime="application/octet-stream"
-                            )
-                            st.success(f"✅ VTK campo 2D creado: {len(y_vals)}x{len(z_vals)} grilla con gradientes")
-                        else:
-                            # Fallback: puntos dispersos
-                            points = np.column_stack([
-                                df_matriz_vtk['Y'].values,
-                                df_matriz_vtk['Z'].values,
-                                np.zeros(len(df_matriz_vtk))
-                            ])
-                            
-                            point_cloud = pv.PolyData(points)
-                            point_cloud['Presion'] = df_matriz_vtk['Presion'].values
-                            point_cloud['Coord_Y'] = df_matriz_vtk['Y'].values
-                            point_cloud['Coord_Z'] = df_matriz_vtk['Z'].values
-                            
-                            nombre_archivo_puntos = f"{nombre_vtk}_puntos_2d.vtk"
-                            point_cloud.save(nombre_archivo_puntos)
-                            
-                            with open(nombre_archivo_puntos, "rb") as f:
-                                contenido_vtk = f.read()
-                            
-                            st.download_button(
-                                label="📥 Descargar VTK Puntos 2D",
-                                data=contenido_vtk,
-                                file_name=f"{nombre_vtk}_puntos_2d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
-                                mime="application/octet-stream"
-                            )
-                            st.success(f"✅ VTK puntos 2D creado: {len(points)} puntos")
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error al crear VTK campo 2D: {str(e)}")
-                else:
-                    st.error("❌ No se pudo obtener la matriz de presiones")
+        # 1. Botón para Campo 2D
+        if st.button("📍 VTK Campo 2D", key="btn_vtk_campo_2d", help="Crea un plano 2D en YZ con la presión como mapa de colores."):
+            if df_matriz_vtk is not None and not df_matriz_vtk.empty:
+                resultado = crear_vtk_campo_2d_plano_yz(df_matriz_vtk, nombre_vtk)
+                if resultado:
+                    with open(resultado, "rb") as f:
+                        st.download_button(
+                            label="📥 Descargar Campo 2D", data=f.read(),
+                            file_name=f"{nombre_vtk}_campo_2d.vtk", mime="application/octet-stream"
+                        )
+            else:
+                st.error("❌ No hay una matriz de datos válida para generar el archivo VTK.")
+        
+        # 2. Botón para Superficie 3D
+        if st.button("🕸️ VTK Superficie 3D", key="btn_vtk_superficie_3d", help="Crea una superficie 3D con la presión como relieve en el eje X."):
+            if df_matriz_vtk is not None and not df_matriz_vtk.empty:
+                resultado = crear_vtk_superficie_3d_delaunay(df_matriz_vtk, nombre_vtk)
+                if resultado:
+                    with open(resultado, "rb") as f:
+                        st.download_button(
+                            label="📥 Descargar Superficie 3D", data=f.read(),
+                            file_name=f"{nombre_vtk}_superficie_3d.vtk", mime="application/octet-stream"
+                        )
+            else:
+                st.error("❌ No hay una matriz de datos válida para generar el archivo VTK.")
 
-        with col_vtk2:
-            # Botón: VTK con superficie Delaunay 3D (función original incluida)
-            if st.button("🕸️ VTK Superficie 3D", key="btn_vtk_superficie_3d", type="primary"):
-                df_matriz_vtk = cargar_matriz_para_vtk()
-                if df_matriz_vtk is not None and not df_matriz_vtk.empty:
-                    try:
-                        nombre_archivo_superficie = f"{nombre_vtk}_superficie_3d.vtk"
-                        resultado = crear_archivo_vtk_superficie_delaunay_corregido(df_matriz_vtk, nombre_archivo_superficie)
-                        
-                        if resultado:
-                            with open(nombre_archivo_superficie, "rb") as f:
-                                contenido_vtk = f.read()
-                            
-                            st.download_button(
-                                label="📥 Descargar VTK Superficie 3D",
-                                data=contenido_vtk,
-                                file_name=f"{nombre_vtk}_superficie_3d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk",
-                                mime="application/octet-stream"
-                            )
-                            st.success("✅ VTK superficie 3D creado (presión como altura Z)")
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error al crear VTK superficie 3D: {str(e)}")
-                else:
-                    st.error("❌ No se pudo obtener la matriz de presiones")
-
-        with st.expander("ℹ️ Diferencias entre los archivos VTK"):
+        with st.expander("ℹ️ ¿Qué archivo elegir?"):
             st.markdown("""
-            **📍 VTK Campo 2D:**
-            - Campo de presiones en plano 2D (Z=0)
-            - Grilla estructurada con interpolación automática
-            - Incluye gradientes de presión como vectores
-            - Ideal para análisis de distribución y flujo en ParaView
-            
-            **🕸️ VTK Superficie 3D:**
-            - Superficie triangulada con triangulación Delaunay
-            - **La presión se usa como altura Z (coordenada 3D)**
-            - Crea una superficie 3D real donde se puede ver el relieve de presiones
-            - Ideal para análisis topográfico de presiones en ParaView/Salome
+            - **📍 Campo 2D:** Úsalo para tener una vista rápida y limpia de la distribución de presiones en el plano de medición.
+            - **🕸️ Superficie 3D:** Elige este para visualizar la topografía y el relieve que genera la presión. Muy bueno para informes.
             """)
 
 elif st.session_state.seccion_actual == 'visualizacion':
@@ -3133,5 +2983,6 @@ st.markdown(f"""
     <p><small>Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small></p>
 </div>
 """, unsafe_allow_html=True)
+
 
 
