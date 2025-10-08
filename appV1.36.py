@@ -952,7 +952,7 @@ def mostrar_configuracion_sensores(section_key):
     )
     
     distancia_entre_tomas = st.number_input(
-        "Distancia entre tomas [mm]:", value=10, step=0.01, format="%.2f",
+        "Distancia entre tomas [mm]:", value=10.0, step=0.01, format="%.2f",
         help="Distancia física entre tomas consecutivas según el plano técnico.",
         key=f'dist_entre_{section_key}'
     )
@@ -1842,7 +1842,7 @@ elif st.session_state.seccion_actual == 'betz_2d':
 
         distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=10,
+            value=10.0,
             step=0.01,
             format="%.2f",
             help="Distancia física entre tomas consecutivas según el plano técnico"
@@ -2384,7 +2384,7 @@ elif st.session_state.seccion_actual == 'betz_3d':
         
         distancia_entre_tomas = st.number_input(
             "Distancia entre tomas [mm]:",
-            value=10,
+            value=10.0,
             step=0.01,
             format="%.2f",
             help="Distancia física entre tomas consecutivas según el plano técnico",
